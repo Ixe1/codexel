@@ -15,6 +15,7 @@ Control Codex’s behavior during an interactive session with slash commands.
 | `/model`     | choose what model and reasoning effort to use                              |
 | `/approvals` | choose what Codex can do without approval                                  |
 | `/review`    | review my current changes and find issues                                  |
+| `/plan`      | create and approve a plan before making changes                            |
 | `/new`       | start a new chat during a conversation                                     |
 | `/resume`    | resume an old chat                                                         |
 | `/init`      | create an AGENTS.md file with instructions for Codex                       |
