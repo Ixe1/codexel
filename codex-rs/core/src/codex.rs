@@ -262,6 +262,8 @@ impl Codex {
             model: model.clone(),
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: config.plan_model.clone(),
+            plan_model_reasoning_effort: config.plan_model_reasoning_effort,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             base_instructions: config.base_instructions.clone(),
@@ -359,6 +361,8 @@ pub(crate) struct Session {
 pub(crate) struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) client: ModelClient,
+    pub(crate) plan_model: Option<String>,
+    pub(crate) plan_reasoning_effort: Option<ReasoningEffortConfig>,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
@@ -404,6 +408,10 @@ pub(crate) struct SessionConfiguration {
     model_reasoning_effort: Option<ReasoningEffortConfig>,
     model_reasoning_summary: ReasoningSummaryConfig,
 
+    /// Optional model slug override used for planning flows (e.g. `/plan` mode and plan-variant subagents).
+    plan_model: Option<String>,
+    plan_model_reasoning_effort: Option<ReasoningEffortConfig>,
+
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
 
@@ -445,8 +453,14 @@ impl SessionConfiguration {
         if let Some(model) = updates.model.clone() {
             next_configuration.model = model;
         }
+        if let Some(plan_model) = updates.plan_model.clone() {
+            next_configuration.plan_model = Some(plan_model);
+        }
         if let Some(effort) = updates.reasoning_effort {
             next_configuration.model_reasoning_effort = effort;
+        }
+        if let Some(effort) = updates.plan_reasoning_effort {
+            next_configuration.plan_model_reasoning_effort = effort;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
@@ -470,7 +484,9 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) model: Option<String>,
+    pub(crate) plan_model: Option<String>,
     pub(crate) reasoning_effort: Option<Option<ReasoningEffortConfig>>,
+    pub(crate) plan_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
 }
@@ -524,6 +540,8 @@ impl Session {
         TurnContext {
             sub_id,
             client,
+            plan_model: session_configuration.plan_model.clone(),
+            plan_reasoning_effort: session_configuration.plan_model_reasoning_effort,
             cwd: session_configuration.cwd.clone(),
             developer_instructions: match session_configuration.session_source {
                 SessionSource::Cli | SessionSource::VSCode => {
@@ -1681,7 +1699,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 approval_policy,
                 sandbox_policy,
                 model,
+                plan_model,
                 effort,
+                plan_effort,
                 summary,
             } => {
                 handlers::override_turn_context(
@@ -1691,7 +1711,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         approval_policy,
                         sandbox_policy,
                         model,
+                        plan_model,
                         reasoning_effort: effort,
+                        plan_reasoning_effort: plan_effort,
                         reasoning_summary: summary,
                         ..Default::default()
                     },
@@ -1843,7 +1865,9 @@ mod handlers {
                     approval_policy: Some(approval_policy),
                     sandbox_policy: Some(sandbox_policy),
                     model: Some(model),
+                    plan_model: None,
                     reasoning_effort: Some(effort),
+                    plan_reasoning_effort: None,
                     reasoning_summary: Some(summary),
                     final_output_json_schema: Some(final_output_json_schema),
                 },
@@ -2263,6 +2287,8 @@ async fn spawn_review_thread(
     let review_turn_context = TurnContext {
         sub_id: sub_id.to_string(),
         client,
+        plan_model: parent_turn_context.plan_model.clone(),
+        plan_reasoning_effort: parent_turn_context.plan_reasoning_effort,
         tools_config,
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
@@ -2966,6 +2992,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3038,6 +3066,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3242,6 +3272,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3333,6 +3365,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),

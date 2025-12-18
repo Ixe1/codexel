@@ -13,6 +13,7 @@ Control Codex’s behavior during an interactive session with slash commands.
 | Command      | Purpose                                                                    |
 | ------------ | -------------------------------------------------------------------------- |
 | `/model`     | choose what model and reasoning effort to use                              |
+| `/plan-model` | choose what model and reasoning effort to use for `/plan`                 |
 | `/approvals` | choose what Codex can do without approval                                  |
 | `/review`    | review my current changes and find issues                                  |
 | `/plan`      | create and approve a plan before making changes                            |

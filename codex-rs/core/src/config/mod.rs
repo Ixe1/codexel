@@ -90,6 +90,11 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: Option<String>,
 
+    /// Optional override of model selection used for planning flows (e.g. `/plan` mode).
+    ///
+    /// When unset, planning flows use the active `model`.
+    pub plan_model: Option<String>,
+
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
 
@@ -231,6 +236,11 @@ pub struct Config {
     /// Value to use for `reasoning.effort` when making a request using the
     /// Responses API.
     pub model_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Value to use for `reasoning.effort` in planning flows (e.g. `/plan` mode).
+    ///
+    /// When unset, planning flows use `model_reasoning_effort`.
+    pub plan_model_reasoning_effort: Option<ReasoningEffort>,
 
     /// If not "none", the value to use for `reasoning.summary` when making a
     /// request using the Responses API.
@@ -536,6 +546,8 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Optional override of model selection used for planning flows (e.g. `/plan` mode).
+    pub plan_model: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
@@ -641,6 +653,7 @@ pub struct ConfigToml {
     pub show_raw_agent_reasoning: Option<bool>,
 
     pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub plan_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
@@ -1105,6 +1118,7 @@ impl Config {
         let forced_login_method = cfg.forced_login_method;
 
         let model = model.or(config_profile.model).or(cfg.model);
+        let plan_model = config_profile.plan_model.or(cfg.plan_model);
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
             let trimmed = value.trim();
@@ -1150,6 +1164,7 @@ impl Config {
 
         let config = Self {
             model,
+            plan_model,
             review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
@@ -1202,6 +1217,9 @@ impl Config {
             model_reasoning_effort: config_profile
                 .model_reasoning_effort
                 .or(cfg.model_reasoning_effort),
+            plan_model_reasoning_effort: config_profile
+                .plan_model_reasoning_effort
+                .or(cfg.plan_model_reasoning_effort),
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
@@ -2940,6 +2958,7 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: Some("o3".to_string()),
+                plan_model: None,
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
@@ -2967,6 +2986,7 @@ model_verbosity = "high"
                 hide_agent_reasoning: false,
                 show_raw_agent_reasoning: false,
                 model_reasoning_effort: Some(ReasoningEffort::High),
+                plan_model_reasoning_effort: None,
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_supports_reasoning_summaries: None,
                 model_reasoning_summary_format: None,
@@ -3015,6 +3035,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: Some("gpt-3.5-turbo".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3042,6 +3063,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
@@ -3105,6 +3127,7 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: Some("o3".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3132,6 +3155,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
@@ -3181,6 +3205,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: Some("gpt-5.1".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3208,6 +3233,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: Some(ReasoningEffort::High),
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
