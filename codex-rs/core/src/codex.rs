@@ -20,6 +20,7 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::openai_models::models_manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
+use crate::plan_output;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
@@ -36,6 +37,7 @@ use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::PlanOutputEvent;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
@@ -883,6 +885,11 @@ impl Session {
         state.session_configuration = state.session_configuration.apply(&updates);
     }
 
+    pub(crate) async fn set_pending_approved_plan(&self, plan_output: Option<PlanOutputEvent>) {
+        let mut state = self.state.lock().await;
+        state.set_pending_approved_plan(plan_output);
+    }
+
     pub(crate) async fn new_turn(&self, updates: SessionSettingsUpdate) -> Arc<TurnContext> {
         let sub_id = self.next_internal_sub_id();
         self.new_turn_with_sub_id(sub_id, updates).await
@@ -893,13 +900,24 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> Arc<TurnContext> {
-        let (session_configuration, sandbox_policy_changed) = {
+        let (session_configuration, sandbox_policy_changed, pending_approved_plan) = {
             let mut state = self.state.lock().await;
             let session_configuration = state.session_configuration.clone().apply(&updates);
             let sandbox_policy_changed =
                 state.session_configuration.sandbox_policy != session_configuration.sandbox_policy;
             state.session_configuration = session_configuration.clone();
-            (session_configuration, sandbox_policy_changed)
+            let pending_approved_plan = match session_configuration.session_source {
+                SessionSource::Cli | SessionSource::VSCode => state.take_pending_approved_plan(),
+                SessionSource::Exec
+                | SessionSource::Mcp
+                | SessionSource::SubAgent(_)
+                | SessionSource::Unknown => None,
+            };
+            (
+                session_configuration,
+                sandbox_policy_changed,
+                pending_approved_plan,
+            )
         };
         let per_turn_config = Self::build_per_turn_config(&session_configuration);
 
@@ -936,6 +954,21 @@ impl Session {
             self.conversation_id,
             sub_id,
         );
+        if let Some(out) = pending_approved_plan {
+            let prelude = plan_output::render_approved_plan_developer_prelude(&out);
+            turn_context.developer_instructions =
+                Some(match turn_context.developer_instructions.take() {
+                    Some(existing) => {
+                        let existing = existing.trim();
+                        if existing.is_empty() {
+                            prelude
+                        } else {
+                            format!("{prelude}\n\n{existing}")
+                        }
+                    }
+                    None => prelude,
+                });
+        }
         if let Some(final_schema) = updates.final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
         }
@@ -2901,6 +2934,10 @@ mod tests {
     use crate::shell::default_user_shell;
     use crate::tools::format_exec_output_str;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::plan_tool::PlanItemArg;
+    use codex_protocol::plan_tool::StepStatus;
+    use codex_protocol::plan_tool::UpdatePlanArgs;
+    use codex_protocol::protocol::SubAgentSource;
 
     use crate::protocol::CompactedItem;
     use crate::protocol::CreditsSnapshot;
@@ -3430,6 +3467,74 @@ mod tests {
         });
 
         (session, turn_context, rx_event)
+    }
+
+    fn sample_plan_output_event() -> PlanOutputEvent {
+        PlanOutputEvent {
+            title: "Test plan".to_string(),
+            summary: "Test summary".to_string(),
+            plan: UpdatePlanArgs {
+                explanation: Some("Test explanation".to_string()),
+                plan: vec![PlanItemArg {
+                    step: "Do the thing".to_string(),
+                    status: StepStatus::Pending,
+                }],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_plan_is_pinned_into_next_cli_turn_developer_instructions() {
+        let (session, _turn_context, _rx) = make_session_and_context_with_rx();
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration.session_source = SessionSource::Cli;
+        }
+
+        let plan_output = sample_plan_output_event();
+        session
+            .set_pending_approved_plan(Some(plan_output.clone()))
+            .await;
+
+        let turn = session.new_turn(SessionSettingsUpdate::default()).await;
+        let developer_instructions = turn.developer_instructions.as_deref().unwrap_or_default();
+        assert!(developer_instructions.starts_with("## Approved Plan (Pinned)"));
+        assert!(developer_instructions.contains(plan_output.title.as_str()));
+
+        {
+            let state = session.state.lock().await;
+            assert!(state.pending_approved_plan.is_none());
+        }
+
+        let next_turn = session.new_turn(SessionSettingsUpdate::default()).await;
+        let developer_instructions = next_turn
+            .developer_instructions
+            .as_deref()
+            .unwrap_or_default();
+        assert!(!developer_instructions.contains("## Approved Plan (Pinned)"));
+    }
+
+    #[tokio::test]
+    async fn approved_plan_is_not_consumed_for_subagent_turns() {
+        let (session, _turn_context, _rx) = make_session_and_context_with_rx();
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration.session_source =
+                SessionSource::SubAgent(SubAgentSource::Other("test".to_string()));
+        }
+
+        session
+            .set_pending_approved_plan(Some(sample_plan_output_event()))
+            .await;
+
+        let turn = session.new_turn(SessionSettingsUpdate::default()).await;
+        let developer_instructions = turn.developer_instructions.as_deref().unwrap_or_default();
+        assert!(!developer_instructions.contains("## Approved Plan (Pinned)"));
+
+        {
+            let state = session.state.lock().await;
+            assert!(state.pending_approved_plan.is_some());
+        }
     }
 
     #[tokio::test]
