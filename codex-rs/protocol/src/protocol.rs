@@ -42,6 +42,17 @@ pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecPolicyAmendment;
+pub use crate::ask_user_question::AskUserQuestion;
+pub use crate::ask_user_question::AskUserQuestionArgs;
+pub use crate::ask_user_question::AskUserQuestionOption;
+pub use crate::ask_user_question::AskUserQuestionRequestEvent;
+pub use crate::ask_user_question::AskUserQuestionResponse;
+pub use crate::plan_approval::PlanApprovalRequestEvent;
+pub use crate::plan_approval::PlanApprovalResponse;
+pub use crate::plan_approval::PlanProposal;
+pub use crate::plan_mode::ExitedPlanModeEvent;
+pub use crate::plan_mode::PlanOutputEvent;
+pub use crate::plan_mode::PlanRequest;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
 /// duplicated hardcoded strings.
@@ -129,12 +140,25 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
 
+        /// Updated model slug used for planning flows (e.g. `/plan` mode and plan-variant subagents).
+        ///
+        /// When omitted, planning flows use the active `model`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan_model: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
         /// the effort, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for planning flows (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan_effort: Option<Option<ReasoningEffortConfig>>,
 
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +189,25 @@ pub enum Op {
         request_id: RequestId,
         /// User's decision for the request.
         decision: ElicitationAction,
+    },
+
+    /// Resolve an AskUserQuestion request emitted during a tool call.
+    ResolveAskUserQuestion {
+        /// The id of the submission we are responding to.
+        id: String,
+        /// The user's response (answered or cancelled).
+        response: AskUserQuestionResponse,
+    },
+
+    /// Start a planning session (/plan).
+    Plan { plan_request: PlanRequest },
+
+    /// Resolve a PlanApproval request emitted during a tool call.
+    ResolvePlanApproval {
+        /// The id of the submission we are responding to.
+        id: String,
+        /// The user's response (approved/revised/rejected).
+        response: PlanApprovalResponse,
     },
 
     /// Append an entry to the persistent cross-session message history.
@@ -576,6 +619,11 @@ pub enum EventMsg {
 
     ElicitationRequest(ElicitationRequestEvent),
 
+    AskUserQuestionRequest(AskUserQuestionRequestEvent),
+
+    /// Ask the user to approve, revise, or reject a proposed plan.
+    PlanApprovalRequest(PlanApprovalRequestEvent),
+
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
 
     /// Notification advising the user that something they are using has been
@@ -628,6 +676,12 @@ pub enum EventMsg {
 
     /// Exited review mode with an optional final result to apply.
     ExitedReviewMode(ExitedReviewModeEvent),
+
+    /// Entered plan mode.
+    EnteredPlanMode(PlanRequest),
+
+    /// Exited plan mode with an optional accepted plan.
+    ExitedPlanMode(ExitedPlanModeEvent),
 
     RawResponseItem(RawResponseItemEvent),
 
@@ -1405,17 +1459,13 @@ pub struct ReviewLineRange {
 
 #[derive(Debug, Clone, Copy, Display, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExecCommandSource {
+    #[default]
     Agent,
     UserShell,
     UnifiedExecStartup,
     UnifiedExecInteraction,
-}
-
-impl Default for ExecCommandSource {
-    fn default() -> Self {
-        Self::Agent
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

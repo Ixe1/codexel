@@ -8,12 +8,20 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+use codex_protocol::ask_user_question::AskUserQuestionResponse;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::plan_approval::PlanApprovalResponse;
 use tokio::sync::oneshot;
 
 use crate::codex::TurnContext;
+use crate::protocol::PlanProposal;
 use crate::protocol::ReviewDecision;
 use crate::tasks::SessionTask;
+
+pub(crate) struct PendingPlanApproval {
+    pub(crate) proposal: PlanProposal,
+    pub(crate) tx: oneshot::Sender<PlanApprovalResponse>,
+}
 
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
@@ -34,6 +42,7 @@ impl Default for ActiveTurn {
 pub(crate) enum TaskKind {
     Regular,
     Review,
+    Plan,
     Compact,
 }
 
@@ -67,6 +76,8 @@ impl ActiveTurn {
 #[derive(Default)]
 pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
+    pending_user_questions: HashMap<String, oneshot::Sender<AskUserQuestionResponse>>,
+    pending_plan_approvals: HashMap<String, PendingPlanApproval>,
     pending_input: Vec<ResponseInputItem>,
 }
 
@@ -86,8 +97,40 @@ impl TurnState {
         self.pending_approvals.remove(key)
     }
 
+    pub(crate) fn insert_pending_user_question(
+        &mut self,
+        key: String,
+        tx: oneshot::Sender<AskUserQuestionResponse>,
+    ) -> Option<oneshot::Sender<AskUserQuestionResponse>> {
+        self.pending_user_questions.insert(key, tx)
+    }
+
+    pub(crate) fn remove_pending_user_question(
+        &mut self,
+        key: &str,
+    ) -> Option<oneshot::Sender<AskUserQuestionResponse>> {
+        self.pending_user_questions.remove(key)
+    }
+
+    pub(crate) fn insert_pending_plan_approval(
+        &mut self,
+        key: String,
+        pending: PendingPlanApproval,
+    ) -> Option<PendingPlanApproval> {
+        self.pending_plan_approvals.insert(key, pending)
+    }
+
+    pub(crate) fn remove_pending_plan_approval(
+        &mut self,
+        key: &str,
+    ) -> Option<PendingPlanApproval> {
+        self.pending_plan_approvals.remove(key)
+    }
+
     pub(crate) fn clear_pending(&mut self) {
         self.pending_approvals.clear();
+        self.pending_user_questions.clear();
+        self.pending_plan_approvals.clear();
         self.pending_input.clear();
     }
 

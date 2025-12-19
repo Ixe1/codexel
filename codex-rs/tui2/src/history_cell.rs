@@ -307,7 +307,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                "https://github.com/Ixe1/codexel".cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -322,7 +322,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
+            "https://github.com/Ixe1/codexel/releases/latest"
                 .cyan()
                 .underlined(),
         ];
@@ -767,10 +767,10 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
+        // Title line rendered inside the box: ">_ Codexel (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from("Codexel").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
@@ -1021,9 +1021,9 @@ pub(crate) fn new_active_mcp_tool_call(
     McpToolCallCell::new(call_id, invocation, animations_enabled)
 }
 
-pub(crate) fn new_web_search_call(query: String) -> PlainHistoryCell {
-    let lines: Vec<Line<'static>> = vec![Line::from(vec![padded_emoji("🌐").into(), query.into()])];
-    PlainHistoryCell { lines }
+pub(crate) fn new_web_search_call(query: String) -> PrefixedWrappedHistoryCell {
+    let text: Text<'static> = Line::from(vec!["Searched".bold(), " ".into(), query.into()]).into();
+    PrefixedWrappedHistoryCell::new(text, "• ".dim(), "  ")
 }
 
 /// If the first content is an image, return a new cell with the image.
@@ -1113,7 +1113,8 @@ pub(crate) fn empty_mcp_output() -> PlainHistoryCell {
         "  • No MCP servers configured.".italic().into(),
         Line::from(vec![
             "    See the ".into(),
-            "\u{1b}]8;;https://github.com/openai/codex/blob/main/docs/config.md#mcp_servers\u{7}MCP docs\u{1b}]8;;\u{7}".underlined(),
+            "\u{1b}]8;;https://github.com/Ixe1/codexel/blob/main/docs/config.md#mcp_servers\u{7}MCP docs\u{1b}]8;;\u{7}"
+                .underlined(),
             " to configure them.".into(),
         ])
         .style(Style::default().add_modifier(Modifier::DIM)),
@@ -1671,6 +1672,50 @@ mod tests {
                 "  time".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn web_search_history_cell_snapshot() {
+        let cell = new_web_search_call(
+            "example search query with several generic words to exercise wrapping".to_string(),
+        );
+        let rendered = render_lines(&cell.display_lines(64)).join("\n");
+
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn web_search_history_cell_wraps_with_indented_continuation() {
+        let cell = new_web_search_call(
+            "example search query with several generic words to exercise wrapping".to_string(),
+        );
+        let rendered = render_lines(&cell.display_lines(64));
+
+        assert_eq!(
+            rendered,
+            vec![
+                "• Searched example search query with several generic words to".to_string(),
+                "  exercise wrapping".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn web_search_history_cell_short_query_does_not_wrap() {
+        let cell = new_web_search_call("short query".to_string());
+        let rendered = render_lines(&cell.display_lines(64));
+
+        assert_eq!(rendered, vec!["• Searched short query".to_string()]);
+    }
+
+    #[test]
+    fn web_search_history_cell_transcript_snapshot() {
+        let cell = new_web_search_call(
+            "example search query with several generic words to exercise wrapping".to_string(),
+        );
+        let rendered = render_lines(&cell.transcript_lines(64)).join("\n");
+
+        insta::assert_snapshot!(rendered);
     }
 
     #[test]

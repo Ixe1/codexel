@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified entry point for the Codex CLI.
+// Unified entry point for Codexel.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "fs";
@@ -61,8 +61,9 @@ if (!targetTriple) {
 
 const vendorRoot = path.join(__dirname, "..", "vendor");
 const archRoot = path.join(vendorRoot, targetTriple);
-const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
-const binaryPath = path.join(archRoot, "codex", codexBinaryName);
+const codexelBinaryName =
+  process.platform === "win32" ? "codexel.exe" : "codexel";
+const binaryPath = path.join(archRoot, "codex", codexelBinaryName);
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
@@ -94,7 +95,6 @@ function detectPackageManager() {
   if (execPath.includes("bun")) {
     return "bun";
   }
-
 
   if (
     __dirname.includes(".bun/install/global") ||

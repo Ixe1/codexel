@@ -95,6 +95,11 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: Option<String>,
 
+    /// Optional override of model selection used for planning flows (e.g. `/plan` mode).
+    ///
+    /// When unset, planning flows use the active `model`.
+    pub plan_model: Option<String>,
+
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
 
@@ -195,7 +200,7 @@ pub struct Config {
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
-    ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
+    ///          https://github.com/Ixe1/codexel/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
     /// file: CODEX_HOME/.credentials.json
     ///       This file will be readable to Codex and other applications running as the same user.
     /// auto (default): keyring if available, otherwise file.
@@ -236,6 +241,11 @@ pub struct Config {
     /// Value to use for `reasoning.effort` when making a request using the
     /// Responses API.
     pub model_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Value to use for `reasoning.effort` in planning flows (e.g. `/plan` mode).
+    ///
+    /// When unset, planning flows use `model_reasoning_effort`.
+    pub plan_model_reasoning_effort: Option<ReasoningEffort>,
 
     /// If not "none", the value to use for `reasoning.summary` when making a
     /// request using the Responses API.
@@ -604,6 +614,8 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Optional override of model selection used for planning flows (e.g. `/plan` mode).
+    pub plan_model: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
@@ -663,7 +675,7 @@ pub struct ConfigToml {
 
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
-    ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
+    ///          https://github.com/Ixe1/codexel/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
     /// file: Use a file in the Codex home directory.
     /// auto (default): Use the OS-specific keyring service if available, otherwise use a file.
     #[serde(default)]
@@ -709,6 +721,7 @@ pub struct ConfigToml {
     pub show_raw_agent_reasoning: Option<bool>,
 
     pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub plan_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
@@ -1191,6 +1204,7 @@ impl Config {
         let forced_login_method = cfg.forced_login_method;
 
         let model = model.or(config_profile.model).or(cfg.model);
+        let plan_model = config_profile.plan_model.or(cfg.plan_model);
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
             let trimmed = value.trim();
@@ -1244,6 +1258,7 @@ impl Config {
 
         let config = Self {
             model,
+            plan_model,
             review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
@@ -1296,6 +1311,9 @@ impl Config {
             model_reasoning_effort: config_profile
                 .model_reasoning_effort
                 .or(cfg.model_reasoning_effort),
+            plan_model_reasoning_effort: config_profile
+                .plan_model_reasoning_effort
+                .or(cfg.plan_model_reasoning_effort),
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
@@ -1406,31 +1424,50 @@ fn default_review_model() -> String {
     OPENAI_DEFAULT_REVIEW_MODEL.to_string()
 }
 
-/// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// Returns the path to the Codexel configuration directory.
 ///
-/// - If `CODEX_HOME` is set, the value will be canonicalized and this
+/// The directory can be specified by the `CODEXEL_HOME` environment variable.
+/// For compatibility with existing installs, `CODEX_HOME` is also honored. When
+/// neither is set, defaults to `~/.codexel`, falling back to `~/.codex` if that
+/// directory exists and `~/.codexel` does not.
+///
+/// - If `CODEXEL_HOME` (or `CODEX_HOME`) is set, the value will be canonicalized and this
 ///   function will Err if the path does not exist.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// - If neither environment variable is set, this function does not verify
+///   that the directory exists.
 pub fn find_codex_home() -> std::io::Result<PathBuf> {
-    // Honor the `CODEX_HOME` environment variable when it is set to allow users
-    // (and tests) to override the default location.
+    // Honor `CODEXEL_HOME` (preferred) and `CODEX_HOME` (legacy) when set to
+    // allow users (and tests) to override the default location.
+    if let Ok(val) = std::env::var("CODEXEL_HOME")
+        && !val.is_empty()
+    {
+        return PathBuf::from(val).canonicalize();
+    }
+
     if let Ok(val) = std::env::var("CODEX_HOME")
         && !val.is_empty()
     {
         return PathBuf::from(val).canonicalize();
     }
 
-    let mut p = home_dir().ok_or_else(|| {
+    let home = home_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "Could not find home directory",
         )
     })?;
-    p.push(".codex");
-    Ok(p)
+
+    let codexel_home = home.join(".codexel");
+    if codexel_home.exists() {
+        return Ok(codexel_home);
+    }
+
+    let codex_home = home.join(".codex");
+    if codex_home.exists() {
+        return Ok(codex_home);
+    }
+
+    Ok(codexel_home)
 }
 
 /// Returns the path to the folder where Codex logs are stored. Does not verify
@@ -3043,6 +3080,7 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: Some("o3".to_string()),
+                plan_model: None,
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
@@ -3070,6 +3108,7 @@ model_verbosity = "high"
                 hide_agent_reasoning: false,
                 show_raw_agent_reasoning: false,
                 model_reasoning_effort: Some(ReasoningEffort::High),
+                plan_model_reasoning_effort: None,
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_supports_reasoning_summaries: None,
                 model_reasoning_summary_format: None,
@@ -3118,6 +3157,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: Some("gpt-3.5-turbo".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3145,6 +3185,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
@@ -3208,6 +3249,7 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: Some("o3".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3235,6 +3277,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: None,
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
@@ -3284,6 +3327,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: Some("gpt-5.1".to_string()),
+            plan_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3311,6 +3355,7 @@ model_verbosity = "high"
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             model_reasoning_effort: Some(ReasoningEffort::High),
+            plan_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,

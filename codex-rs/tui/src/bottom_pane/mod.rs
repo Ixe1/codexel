@@ -21,6 +21,7 @@ use std::time::Duration;
 mod approval_overlay;
 pub(crate) use approval_overlay::ApprovalOverlay;
 pub(crate) use approval_overlay::ApprovalRequest;
+mod ask_user_question_overlay;
 mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
@@ -30,6 +31,8 @@ mod experimental_features_view;
 mod file_search_popup;
 mod footer;
 mod list_selection_view;
+mod plan_approval_overlay;
+mod plan_request_overlay;
 mod prompt_args;
 mod skill_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -56,10 +59,13 @@ pub(crate) use chat_composer::InputResult;
 use codex_protocol::custom_prompts::CustomPrompt;
 
 use crate::status_indicator_widget::StatusIndicatorWidget;
+pub(crate) use ask_user_question_overlay::AskUserQuestionOverlay;
 pub(crate) use experimental_features_view::BetaFeatureItem;
 pub(crate) use experimental_features_view::ExperimentalFeaturesView;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
+pub(crate) use plan_approval_overlay::PlanApprovalOverlay;
+pub(crate) use plan_request_overlay::PlanRequestOverlay;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane {
@@ -280,6 +286,23 @@ impl BottomPane {
     pub(crate) fn update_status_header(&mut self, header: String) {
         if let Some(status) = self.status.as_mut() {
             status.update_header(header);
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn update_status_detail_lines(
+        &mut self,
+        detail_lines: Vec<ratatui::text::Line<'static>>,
+    ) {
+        if let Some(status) = self.status.as_mut() {
+            status.set_detail_lines(detail_lines);
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn clear_status_detail_lines(&mut self) {
+        if let Some(status) = self.status.as_mut() {
+            status.clear_detail_lines();
             self.request_redraw();
         }
     }

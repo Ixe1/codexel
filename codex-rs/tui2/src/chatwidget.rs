@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskUserQuestionRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::DeprecationNoticeEvent;
@@ -31,6 +33,7 @@ use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
+use codex_core::protocol::ExitedPlanModeEvent;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::ListSkillsResponseEvent;
@@ -42,6 +45,8 @@ use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
+use codex_core::protocol::PlanApprovalRequestEvent;
+use codex_core::protocol::PlanRequest;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
@@ -85,10 +90,13 @@ use tracing::debug;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ApprovalRequest;
+use crate::bottom_pane::AskUserQuestionOverlay;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
+use crate::bottom_pane::PlanApprovalOverlay;
+use crate::bottom_pane::PlanRequestOverlay;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
@@ -291,6 +299,7 @@ pub(crate) struct ChatWidget {
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
     plan_type: Option<PlanType>,
+    last_plan_update_key: Option<String>,
     rate_limit_warnings: RateLimitWarningState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     rate_limit_poller: Option<JoinHandle<()>>,
@@ -311,6 +320,7 @@ pub(crate) struct ChatWidget {
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
+    plan_variants_progress: Option<PlanVariantsProgress>,
     conversation_id: Option<ConversationId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -341,6 +351,127 @@ struct UserMessage {
     image_paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone)]
+struct PlanVariantsProgress {
+    total: usize,
+    steps: Vec<ProgressStatus>,
+    durations: Vec<Option<String>>,
+    last_activity: Vec<Option<String>>,
+    tokens: Vec<Option<String>>,
+}
+
+impl PlanVariantsProgress {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            steps: vec![ProgressStatus::Pending; total],
+            durations: vec![None; total],
+            last_activity: vec![None; total],
+            tokens: vec![None; total],
+        }
+    }
+
+    fn variant_label(&self, idx: usize) -> String {
+        if self.total == 3 {
+            match idx {
+                0 => "Minimal".to_string(),
+                1 => "Correctness".to_string(),
+                2 => "DX".to_string(),
+                _ => format!("Variant {}/{}", idx + 1, self.total),
+            }
+        } else {
+            format!("Variant {}/{}", idx + 1, self.total)
+        }
+    }
+
+    fn set_in_progress(&mut self, idx: usize) {
+        if idx < self.steps.len() {
+            self.steps[idx] = ProgressStatus::InProgress;
+        }
+    }
+
+    fn set_completed(&mut self, idx: usize) {
+        if idx < self.steps.len() {
+            self.steps[idx] = ProgressStatus::Completed;
+        }
+    }
+
+    fn set_duration(&mut self, idx: usize, duration: Option<String>) {
+        if idx < self.durations.len() {
+            self.durations[idx] = duration;
+        }
+    }
+
+    fn set_activity(&mut self, idx: usize, activity: Option<String>) {
+        if idx < self.last_activity.len() {
+            self.last_activity[idx] = activity;
+        }
+    }
+
+    fn set_tokens(&mut self, idx: usize, tokens: Option<String>) {
+        if idx < self.tokens.len() {
+            self.tokens[idx] = tokens;
+        }
+    }
+
+    fn render_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::Stylize;
+        let mut lines = Vec::with_capacity(self.total);
+        for (idx, status) in self.steps.iter().copied().enumerate() {
+            let label = self.variant_label(idx);
+            let status_span = match status {
+                ProgressStatus::Pending => "○".dim(),
+                ProgressStatus::InProgress => "●".cyan(),
+                ProgressStatus::Completed => "✓".green(),
+            };
+
+            let mut spans = vec!["  ".into(), status_span, " ".into(), label.into()];
+            let duration = self.durations.get(idx).and_then(|d| d.as_deref());
+            let tokens = self.tokens.get(idx).and_then(|t| t.as_deref());
+            if duration.is_some() || tokens.is_some() {
+                let mut meta = String::new();
+                meta.push('(');
+                if let Some(duration) = duration {
+                    meta.push_str(duration);
+                }
+                if let Some(tokens) = tokens {
+                    if duration.is_some() {
+                        meta.push_str(", ");
+                    }
+                    meta.push_str(tokens);
+                    meta.push_str(" tok");
+                }
+                meta.push(')');
+                spans.push(" ".into());
+                spans.push(meta.dim());
+            }
+            if status == ProgressStatus::Completed {
+                spans.push(" ".into());
+                spans.push("—".dim());
+                spans.push(" ".into());
+                spans.push("done".dim());
+            } else if let Some(activity) = self.last_activity.get(idx).and_then(|a| a.as_deref()) {
+                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
+                if !activity.is_empty() {
+                    spans.push(" ".into());
+                    spans.push("—".dim());
+                    spans.push(" ".into());
+                    spans.push(activity.to_string().dim());
+                }
+            }
+            lines.push(spans.into());
+        }
+        lines
+    }
+}
+
 impl From<String> for UserMessage {
     fn from(text: String) -> Self {
         Self {
@@ -368,6 +499,25 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    fn prepare_for_immediate_interrupt(&mut self) {
+        if self.stream_controller.is_some() {
+            self.flush_answer_stream_with_separator();
+        }
+        if !self.interrupts.is_empty() {
+            self.flush_interrupt_queue();
+        }
+    }
+
+    fn prepare_for_immediate_interrupt_discard_stream(&mut self) {
+        if self.stream_controller.is_some() {
+            self.stream_controller = None;
+            self.app_event_tx.send(AppEvent::StopCommitAnimation);
+        }
+        if !self.interrupts.is_empty() {
+            self.flush_interrupt_queue();
+        }
+    }
+
     fn flush_answer_stream_with_separator(&mut self) {
         if let Some(mut controller) = self.stream_controller.take()
             && let Some(cell) = controller.finalize()
@@ -377,8 +527,20 @@ impl ChatWidget {
     }
 
     fn set_status_header(&mut self, header: String) {
+        if self.plan_variants_progress.is_some() && header != "Planning plan variants" {
+            self.plan_variants_progress = None;
+            self.clear_status_detail_lines();
+        }
         self.current_status_header = header.clone();
         self.bottom_pane.update_status_header(header);
+    }
+
+    fn set_status_detail_lines(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
+        self.bottom_pane.update_status_detail_lines(lines);
+    }
+
+    fn clear_status_detail_lines(&mut self) {
+        self.bottom_pane.clear_status_detail_lines();
     }
 
     fn restore_retry_status_header_if_present(&mut self) {
@@ -523,6 +685,7 @@ impl ChatWidget {
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.set_task_running(true);
         self.retry_status_header = None;
+        self.plan_variants_progress = None;
         self.bottom_pane.set_interrupt_hint_visible(true);
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
@@ -800,10 +963,18 @@ impl ChatWidget {
     }
 
     fn on_plan_update(&mut self, update: UpdatePlanArgs) {
+        let update_key = serde_json::to_string(&update).ok();
+        if let Some(key) = update_key.as_deref()
+            && self.last_plan_update_key.as_deref() == Some(key)
+        {
+            return;
+        }
+        self.last_plan_update_key = update_key;
         self.add_to_history(history_cell::new_plan_update(update));
     }
 
     fn on_exec_approval_request(&mut self, id: String, ev: ExecApprovalRequestEvent) {
+        self.prepare_for_immediate_interrupt();
         let id2 = id.clone();
         let ev2 = ev.clone();
         self.defer_or_handle(
@@ -813,6 +984,7 @@ impl ChatWidget {
     }
 
     fn on_apply_patch_approval_request(&mut self, id: String, ev: ApplyPatchApprovalRequestEvent) {
+        self.prepare_for_immediate_interrupt();
         let id2 = id.clone();
         let ev2 = ev.clone();
         self.defer_or_handle(
@@ -822,10 +994,31 @@ impl ChatWidget {
     }
 
     fn on_elicitation_request(&mut self, ev: ElicitationRequestEvent) {
+        self.prepare_for_immediate_interrupt();
         let ev2 = ev.clone();
         self.defer_or_handle(
             |q| q.push_elicitation(ev),
             |s| s.handle_elicitation_request_now(ev2),
+        );
+    }
+
+    fn on_ask_user_question_request(&mut self, id: String, ev: AskUserQuestionRequestEvent) {
+        self.prepare_for_immediate_interrupt_discard_stream();
+        let id2 = id.clone();
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_ask_user_question(id, ev),
+            |s| s.handle_ask_user_question_request_now(id2, ev2),
+        );
+    }
+
+    fn on_plan_approval_request(&mut self, id: String, ev: PlanApprovalRequestEvent) {
+        self.prepare_for_immediate_interrupt_discard_stream();
+        let id2 = id.clone();
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_plan_approval(id, ev),
+            |s| s.handle_plan_approval_request_now(id2, ev2),
         );
     }
 
@@ -891,10 +1084,7 @@ impl ChatWidget {
 
     fn on_web_search_end(&mut self, ev: WebSearchEndEvent) {
         self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_web_search_call(format!(
-            "Searched: {}",
-            ev.query
-        )));
+        self.add_to_history(history_cell::new_web_search_call(ev.query));
     }
 
     fn on_get_history_entry_response(
@@ -928,7 +1118,119 @@ impl ChatWidget {
         debug!("BackgroundEvent: {message}");
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(true);
+
+        if let Some(progress) = self.maybe_update_plan_variants_progress(message.as_str()) {
+            self.plan_variants_progress = Some(progress);
+            self.set_status_header("Planning plan variants".to_string());
+            self.set_status_detail_lines(
+                self.plan_variants_progress
+                    .as_ref()
+                    .map(PlanVariantsProgress::render_detail_lines)
+                    .unwrap_or_default(),
+            );
+            return;
+        }
+
+        self.plan_variants_progress = None;
+        self.clear_status_detail_lines();
         self.set_status_header(message);
+    }
+
+    fn maybe_update_plan_variants_progress(
+        &mut self,
+        message: &str,
+    ) -> Option<PlanVariantsProgress> {
+        let message = message.trim();
+        if message.starts_with("Plan variants:") {
+            // Expected shapes:
+            // - "Plan variants: generating 1/3…"
+            // - "Plan variants: finished 1/3 (12.3s)"
+            let tokens: Vec<&str> = message.split_whitespace().collect();
+            if tokens.len() < 4 {
+                return None;
+            }
+
+            let action = tokens.get(2).copied()?;
+            let fraction = tokens.get(3).copied()?;
+            let fraction = fraction.trim_end_matches('…');
+            let (idx_str, total_str) = fraction.split_once('/')?;
+            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
+            let total = usize::from_str(total_str).ok()?;
+            if total == 0 {
+                return None;
+            }
+
+            let duration = message
+                .find('(')
+                .and_then(|start| message.rfind(')').map(|end| (start, end)))
+                .and_then(|(start, end)| {
+                    if end > start + 1 {
+                        Some(message[start + 1..end].to_string())
+                    } else {
+                        None
+                    }
+                });
+
+            let mut progress = self
+                .plan_variants_progress
+                .clone()
+                .filter(|p| p.total == total)
+                .unwrap_or_else(|| PlanVariantsProgress::new(total));
+
+            match action {
+                "generating" => {
+                    progress.set_in_progress(idx);
+                    progress.set_duration(idx, None);
+                }
+                "finished" => {
+                    progress.set_completed(idx);
+                    progress.set_duration(idx, duration);
+                    progress.set_activity(idx, None);
+                }
+                _ => return None,
+            }
+
+            return Some(progress);
+        }
+
+        if let Some(rest) = message.strip_prefix("Plan variant ") {
+            // Expected shape:
+            // - "Plan variant 2/3: rg -n ..."
+            // - "Plan variant 2/3: shell rg -n ..." (legacy)
+            let (fraction, activity) = rest.split_once(':')?;
+            let fraction = fraction.trim();
+            let (idx_str, total_str) = fraction.split_once('/')?;
+            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
+            let total = usize::from_str(total_str).ok()?;
+            if total == 0 {
+                return None;
+            }
+
+            let mut progress = self
+                .plan_variants_progress
+                .clone()
+                .filter(|p| p.total == total)
+                .unwrap_or_else(|| PlanVariantsProgress::new(total));
+
+            if idx < progress.steps.len() && progress.steps[idx] == ProgressStatus::Pending {
+                progress.set_in_progress(idx);
+            }
+
+            let activity = activity.trim();
+            if let Some(tokens) = activity.strip_prefix("tokens ") {
+                progress.set_tokens(idx, Some(tokens.trim().to_string()));
+            } else {
+                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
+                if activity.is_empty() {
+                    progress.set_activity(idx, None);
+                } else {
+                    progress.set_activity(idx, Some(activity.to_string()));
+                }
+            }
+            return Some(progress);
+        }
+
+        None
     }
 
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
@@ -1157,6 +1459,36 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn handle_ask_user_question_request_now(
+        &mut self,
+        id: String,
+        ev: AskUserQuestionRequestEvent,
+    ) {
+        self.flush_answer_stream_with_separator();
+        self.bottom_pane
+            .show_view(Box::new(AskUserQuestionOverlay::new(
+                id,
+                ev,
+                self.app_event_tx.clone(),
+            )));
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_plan_approval_request_now(
+        &mut self,
+        id: String,
+        ev: PlanApprovalRequestEvent,
+    ) {
+        self.flush_answer_stream_with_separator();
+        self.bottom_pane
+            .show_view(Box::new(PlanApprovalOverlay::new(
+                id,
+                ev,
+                self.app_event_tx.clone(),
+            )));
+        self.request_redraw();
+    }
+
     pub(crate) fn handle_exec_begin_now(&mut self, ev: ExecCommandBeginEvent) {
         // Ensure the status indicator is visible while the command runs.
         self.running_commands.insert(
@@ -1287,7 +1619,7 @@ impl ChatWidget {
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
-        let mut widget = Self {
+        Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -1314,6 +1646,7 @@ impl ChatWidget {
             token_info: None,
             rate_limit_snapshot: None,
             plan_type: None,
+            last_plan_update_key: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
@@ -1326,8 +1659,9 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            current_status_header: String::from("Working"),
+            current_status_header: String::from("Ready"),
             retry_status_header: None,
+            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
@@ -1339,11 +1673,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-        };
-
-        widget.prefetch_rate_limits();
-
-        widget
+        }
     }
 
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
@@ -1372,7 +1702,7 @@ impl ChatWidget {
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
 
-        let mut widget = Self {
+        Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -1399,6 +1729,7 @@ impl ChatWidget {
             token_info: None,
             rate_limit_snapshot: None,
             plan_type: None,
+            last_plan_update_key: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
@@ -1411,8 +1742,9 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            current_status_header: String::from("Working"),
+            current_status_header: String::from("Ready"),
             retry_status_header: None,
+            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
@@ -1424,11 +1756,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-        };
-
-        widget.prefetch_rate_limits();
-
-        widget
+        }
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -1565,8 +1893,16 @@ impl ChatWidget {
             SlashCommand::Review => {
                 self.open_review_popup();
             }
+            SlashCommand::Plan => {
+                self.bottom_pane
+                    .show_view(Box::new(PlanRequestOverlay::new(self.app_event_tx.clone())));
+                self.request_redraw();
+            }
             SlashCommand::Model => {
                 self.open_model_popup();
+            }
+            SlashCommand::PlanModel => {
+                self.open_plan_model_popup();
             }
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
@@ -1761,6 +2097,7 @@ impl ChatWidget {
             }
         }
 
+        self.prefetch_rate_limits();
         self.codex_op_tx
             .send(Op::UserInput { items })
             .unwrap_or_else(|e| {
@@ -1840,10 +2177,11 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
-            EventMsg::TaskStarted(_) => self.on_task_started(),
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+            EventMsg::TaskStarted(_) if !from_replay => self.on_task_started(),
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) if !from_replay => {
                 self.on_task_complete(last_agent_message)
             }
+            EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_) => {}
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
@@ -1874,6 +2212,12 @@ impl ChatWidget {
             EventMsg::ElicitationRequest(ev) => {
                 self.on_elicitation_request(ev);
             }
+            EventMsg::AskUserQuestionRequest(ev) => {
+                self.on_ask_user_question_request(id.unwrap_or_default(), ev)
+            }
+            EventMsg::PlanApprovalRequest(ev) => {
+                self.on_plan_approval_request(id.unwrap_or_default(), ev)
+            }
             EventMsg::ExecCommandBegin(ev) => self.on_exec_command_begin(ev),
             EventMsg::TerminalInteraction(delta) => self.on_terminal_interaction(delta),
             EventMsg::ExecCommandOutputDelta(delta) => self.on_exec_command_output_delta(delta),
@@ -1898,14 +2242,15 @@ impl ChatWidget {
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
-            EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
+            EventMsg::BackgroundEvent(BackgroundEventEvent { message }) if !from_replay => {
                 self.on_background_event(message)
             }
-            EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
+            EventMsg::UndoStarted(ev) if !from_replay => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
-            EventMsg::StreamError(StreamErrorEvent { message, .. }) => {
+            EventMsg::StreamError(StreamErrorEvent { message, .. }) if !from_replay => {
                 self.on_stream_error(message)
             }
+            EventMsg::BackgroundEvent(_) | EventMsg::UndoStarted(_) | EventMsg::StreamError(_) => {}
             EventMsg::UserMessage(ev) => {
                 if from_replay {
                     self.on_user_message_event(ev);
@@ -1915,6 +2260,14 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
+            EventMsg::EnteredPlanMode(request) => self.on_entered_plan_mode(request),
+            EventMsg::ExitedPlanMode(ev) => {
+                if from_replay {
+                    self.on_exited_plan_mode_replay(ev);
+                } else {
+                    self.on_exited_plan_mode(ev);
+                }
+            }
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
@@ -1971,6 +2324,45 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_review_status_line(
             "<< Code review finished >>".to_string(),
         ));
+        self.request_redraw();
+    }
+
+    fn on_entered_plan_mode(&mut self, request: PlanRequest) {
+        let goal = request.goal.trim();
+        if goal.is_empty() {
+            self.add_info_message(">> Plan mode started <<".to_string(), None);
+        } else {
+            self.add_info_message(format!(">> Plan mode started: {goal} <<"), None);
+        }
+        self.request_redraw();
+    }
+
+    fn on_exited_plan_mode(&mut self, ev: ExitedPlanModeEvent) {
+        if ev.plan_output.is_some() {
+            self.add_info_message(
+                "<< Plan mode finished; executing approved plan >>".to_string(),
+                None,
+            );
+            self.queue_user_message(UserMessage {
+                text: "Proceed with the approved plan.".to_string(),
+                image_paths: Vec::new(),
+            });
+        } else {
+            self.add_info_message("<< Plan mode ended <<".to_string(), None);
+        }
+        self.request_redraw();
+    }
+
+    fn on_exited_plan_mode_replay(&mut self, ev: ExitedPlanModeEvent) {
+        if ev.plan_output.is_some() {
+            self.add_info_message(
+                "<< Plan mode finished; send 'Proceed with the approved plan.' to continue >>"
+                    .to_string(),
+                None,
+            );
+        } else {
+            self.add_info_message("<< Plan mode ended >>".to_string(), None);
+        }
         self.request_redraw();
     }
 
@@ -2073,7 +2465,12 @@ impl ChatWidget {
     }
 
     fn prefetch_rate_limits(&mut self) {
-        self.stop_rate_limit_poller();
+        if self.rate_limit_poller.is_some() {
+            return;
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
 
         let Some(auth) = self.auth_manager.auth() else {
             return;
@@ -2144,7 +2541,9 @@ impl ChatWidget {
                 approval_policy: None,
                 sandbox_policy: None,
                 model: Some(switch_model.clone()),
+                plan_model: None,
                 effort: Some(Some(default_effort)),
+                plan_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateModel(switch_model.clone()));
@@ -2206,7 +2605,23 @@ impl ChatWidget {
     /// Open a popup to choose a quick auto model. Selecting "All models"
     /// opens the full picker with every available preset.
     pub(crate) fn open_model_popup(&mut self) {
-        let current_model = self.model_family.get_model_slug().to_string();
+        self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Chat);
+    }
+
+    pub(crate) fn open_plan_model_popup(&mut self) {
+        self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Plan);
+    }
+
+    fn open_model_popup_for_target(&mut self, target: crate::app_event::ModelPickerTarget) {
+        let chat_model = self.model_family.get_model_slug();
+        let current_model = match target {
+            crate::app_event::ModelPickerTarget::Chat => chat_model.to_string(),
+            crate::app_event::ModelPickerTarget::Plan => self
+                .config
+                .plan_model
+                .clone()
+                .unwrap_or_else(|| chat_model.to_string()),
+        };
         let presets: Vec<ModelPreset> =
             // todo(aibrahim): make this async function
             match self.models_manager.try_list_models(&self.config) {
@@ -2232,7 +2647,7 @@ impl ChatWidget {
             .partition(|preset| Self::is_auto_model(&preset.model));
 
         if auto_presets.is_empty() {
-            self.open_all_models_popup(other_presets);
+            self.open_all_models_popup(target, other_presets);
             return;
         }
 
@@ -2245,6 +2660,7 @@ impl ChatWidget {
                     (!preset.description.is_empty()).then_some(preset.description.clone());
                 let model = preset.model.clone();
                 let actions = Self::model_selection_actions(
+                    target,
                     model.clone(),
                     Some(preset.default_reasoning_effort),
                 );
@@ -2265,13 +2681,23 @@ impl ChatWidget {
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::OpenAllModelsPopup {
                     models: all_models.clone(),
+                    target,
                 });
             })];
 
             let is_current = !items.iter().any(|item| item.is_current);
-            let description = Some(format!(
-                "Choose a specific model and reasoning level (current: {current_label})"
-            ));
+            let description = Some(match target {
+                crate::app_event::ModelPickerTarget::Chat => {
+                    format!(
+                        "Choose a specific model and reasoning level (current: {current_label})"
+                    )
+                }
+                crate::app_event::ModelPickerTarget::Plan => {
+                    format!(
+                        "Choose a specific model and reasoning level for /plan (current: {current_label})"
+                    )
+                }
+            });
 
             items.push(SelectionItem {
                 name: "All models".to_string(),
@@ -2284,8 +2710,18 @@ impl ChatWidget {
         }
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Select Model".to_string()),
-            subtitle: Some("Pick a quick auto mode or browse all models.".to_string()),
+            title: Some(match target {
+                crate::app_event::ModelPickerTarget::Chat => "Select Model".to_string(),
+                crate::app_event::ModelPickerTarget::Plan => "Select Plan Model".to_string(),
+            }),
+            subtitle: Some(match target {
+                crate::app_event::ModelPickerTarget::Chat => {
+                    "Pick a quick auto mode or browse all models.".to_string()
+                }
+                crate::app_event::ModelPickerTarget::Plan => {
+                    "Pick a quick auto mode or browse all models for /plan.".to_string()
+                }
+            }),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -2305,7 +2741,11 @@ impl ChatWidget {
         }
     }
 
-    pub(crate) fn open_all_models_popup(&mut self, presets: Vec<ModelPreset>) {
+    pub(crate) fn open_all_models_popup(
+        &mut self,
+        target: crate::app_event::ModelPickerTarget,
+        presets: Vec<ModelPreset>,
+    ) {
         if presets.is_empty() {
             self.add_info_message(
                 "No additional models are available right now.".to_string(),
@@ -2314,7 +2754,15 @@ impl ChatWidget {
             return;
         }
 
-        let current_model = self.model_family.get_model_slug().to_string();
+        let chat_model = self.model_family.get_model_slug();
+        let current_model = match target {
+            crate::app_event::ModelPickerTarget::Chat => chat_model.to_string(),
+            crate::app_event::ModelPickerTarget::Plan => self
+                .config
+                .plan_model
+                .clone()
+                .unwrap_or_else(|| chat_model.to_string()),
+        };
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
             let description =
@@ -2326,6 +2774,7 @@ impl ChatWidget {
                 let preset_for_event = preset_for_action.clone();
                 tx.send(AppEvent::OpenReasoningPopup {
                     model: preset_for_event,
+                    target,
                 });
             })];
             items.push(SelectionItem {
@@ -2340,7 +2789,12 @@ impl ChatWidget {
         }
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Select Model and Effort".to_string()),
+            title: Some(match target {
+                crate::app_event::ModelPickerTarget::Chat => "Select Model and Effort".to_string(),
+                crate::app_event::ModelPickerTarget::Plan => {
+                    "Select Plan Model and Effort".to_string()
+                }
+            }),
             subtitle: Some(
                 "Access legacy models by running codex -m <model_name> or in your config.toml"
                     .to_string(),
@@ -2352,6 +2806,7 @@ impl ChatWidget {
     }
 
     fn model_selection_actions(
+        target: crate::app_event::ModelPickerTarget,
         model_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
     ) -> Vec<SelectionAction> {
@@ -2359,30 +2814,63 @@ impl ChatWidget {
             let effort_label = effort_for_action
                 .map(|effort| effort.to_string())
                 .unwrap_or_else(|| "default".to_string());
-            tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                model: Some(model_for_action.clone()),
-                effort: Some(effort_for_action),
-                summary: None,
-            }));
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-            tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-            tx.send(AppEvent::PersistModelSelection {
-                model: model_for_action.clone(),
-                effort: effort_for_action,
-            });
-            tracing::info!(
-                "Selected model: {}, Selected effort: {}",
-                model_for_action,
-                effort_label
-            );
+            match target {
+                crate::app_event::ModelPickerTarget::Chat => {
+                    tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: Some(model_for_action.clone()),
+                        plan_model: None,
+                        effort: Some(effort_for_action),
+                        plan_effort: None,
+                        summary: None,
+                    }));
+                    tx.send(AppEvent::UpdateModel(model_for_action.clone()));
+                    tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
+                    tx.send(AppEvent::PersistModelSelection {
+                        model: model_for_action.clone(),
+                        effort: effort_for_action,
+                    });
+                    tracing::info!(
+                        "Selected model: {}, Selected effort: {}",
+                        model_for_action,
+                        effort_label
+                    );
+                }
+                crate::app_event::ModelPickerTarget::Plan => {
+                    tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: Some(model_for_action.clone()),
+                        effort: None,
+                        plan_effort: Some(effort_for_action),
+                        summary: None,
+                    }));
+                    tx.send(AppEvent::UpdatePlanModel(model_for_action.clone()));
+                    tx.send(AppEvent::UpdatePlanReasoningEffort(effort_for_action));
+                    tx.send(AppEvent::PersistPlanModelSelection {
+                        model: model_for_action.clone(),
+                        effort: effort_for_action,
+                    });
+                    tracing::info!(
+                        "Selected plan model: {}, Selected effort: {}",
+                        model_for_action,
+                        effort_label
+                    );
+                }
+            }
         })]
     }
 
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
-    pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
+    pub(crate) fn open_reasoning_popup(
+        &mut self,
+        target: crate::app_event::ModelPickerTarget,
+        preset: ModelPreset,
+    ) {
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
         let supported = preset.supported_reasoning_efforts;
 
@@ -2429,9 +2917,9 @@ impl ChatWidget {
 
         if choices.len() == 1 {
             if let Some(effort) = choices.first().and_then(|c| c.stored) {
-                self.apply_model_and_effort(preset.model, Some(effort));
+                self.apply_model_and_effort(target, preset.model, Some(effort));
             } else {
-                self.apply_model_and_effort(preset.model, None);
+                self.apply_model_and_effort(target, preset.model, None);
             }
             return;
         }
@@ -2445,9 +2933,25 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
-        let is_current_model = self.model_family.get_model_slug() == preset.model;
+        let chat_model = self.model_family.get_model_slug();
+        let effective_current_model = match target {
+            crate::app_event::ModelPickerTarget::Chat => chat_model,
+            crate::app_event::ModelPickerTarget::Plan => {
+                self.config.plan_model.as_deref().unwrap_or(chat_model)
+            }
+        };
+        let is_current_model = effective_current_model == preset.model;
         let highlight_choice = if is_current_model {
-            self.config.model_reasoning_effort
+            match target {
+                crate::app_event::ModelPickerTarget::Chat => self.config.model_reasoning_effort,
+                crate::app_event::ModelPickerTarget::Plan => {
+                    if self.config.plan_model.as_deref() == Some(preset.model.as_str()) {
+                        self.config.plan_model_reasoning_effort
+                    } else {
+                        self.config.model_reasoning_effort
+                    }
+                }
+            }
         } else {
             default_choice
         };
@@ -2490,7 +2994,7 @@ impl ChatWidget {
             };
 
             let model_for_action = model_slug.clone();
-            let actions = Self::model_selection_actions(model_for_action, choice.stored);
+            let actions = Self::model_selection_actions(target, model_for_action, choice.stored);
 
             items.push(SelectionItem {
                 name: effort_label,
@@ -2528,30 +3032,68 @@ impl ChatWidget {
         }
     }
 
-    fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
-        self.app_event_tx
-            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                model: Some(model.clone()),
-                effort: Some(effort),
-                summary: None,
-            }));
-        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
-        self.app_event_tx
-            .send(AppEvent::UpdateReasoningEffort(effort));
-        self.app_event_tx.send(AppEvent::PersistModelSelection {
-            model: model.clone(),
-            effort,
-        });
-        tracing::info!(
-            "Selected model: {}, Selected effort: {}",
-            model,
-            effort
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "default".to_string())
-        );
+    fn apply_model_and_effort(
+        &self,
+        target: crate::app_event::ModelPickerTarget,
+        model: String,
+        effort: Option<ReasoningEffortConfig>,
+    ) {
+        let effort_label = effort
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "default".to_string());
+        match target {
+            crate::app_event::ModelPickerTarget::Chat => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: Some(model.clone()),
+                        plan_model: None,
+                        effort: Some(effort),
+                        plan_effort: None,
+                        summary: None,
+                    }));
+                self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
+                self.app_event_tx
+                    .send(AppEvent::UpdateReasoningEffort(effort));
+                self.app_event_tx.send(AppEvent::PersistModelSelection {
+                    model: model.clone(),
+                    effort,
+                });
+                tracing::info!(
+                    "Selected model: {}, Selected effort: {}",
+                    model,
+                    effort_label
+                );
+            }
+            crate::app_event::ModelPickerTarget::Plan => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: Some(model.clone()),
+                        effort: None,
+                        plan_effort: Some(effort),
+                        summary: None,
+                    }));
+                self.app_event_tx
+                    .send(AppEvent::UpdatePlanModel(model.clone()));
+                self.app_event_tx
+                    .send(AppEvent::UpdatePlanReasoningEffort(effort));
+                self.app_event_tx.send(AppEvent::PersistPlanModelSelection {
+                    model: model.clone(),
+                    effort,
+                });
+                tracing::info!(
+                    "Selected plan model: {}, Selected effort: {}",
+                    model,
+                    effort_label
+                );
+            }
+        }
     }
 
     /// Open a popup to choose the approvals mode (ask for approval policy + sandbox policy).
@@ -2642,7 +3184,9 @@ impl ChatWidget {
                 approval_policy: Some(approval),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 model: None,
+                plan_model: None,
                 effort: None,
+                plan_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
@@ -3001,10 +3545,20 @@ impl ChatWidget {
         self.config.model_reasoning_effort = effort;
     }
 
+    /// Set the plan reasoning effort in the widget's config copy.
+    pub(crate) fn set_plan_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
+        self.config.plan_model_reasoning_effort = effort;
+    }
+
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str, model_family: ModelFamily) {
         self.session_header.set_model(model);
         self.model_family = model_family;
+    }
+
+    /// Set the plan model in the widget's config copy.
+    pub(crate) fn set_plan_model(&mut self, model: &str) {
+        self.config.plan_model = Some(model.to_string());
     }
 
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {

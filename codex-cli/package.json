@@ -1,21 +1,27 @@
 {
-  "name": "@openai/codex",
-  "version": "0.0.0-dev",
+  "name": "@ixe1/codexel",
+  "version": "0.1.2",
   "license": "Apache-2.0",
   "bin": {
-    "codex": "bin/codex.js"
+    "codexel": "bin/codexel.js"
   },
   "type": "module",
   "engines": {
     "node": ">=16"
   },
+  "scripts": {
+    "prepack": "node ./scripts/verify-vendor.mjs"
+  },
   "files": [
     "bin",
     "vendor"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/Ixe1/codexel.git",
     "directory": "codex-cli"
   }
 }

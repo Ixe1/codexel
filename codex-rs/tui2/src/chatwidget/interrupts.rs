@@ -1,12 +1,14 @@
 use std::collections::VecDeque;
 
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskUserQuestionRequestEvent;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyEndEvent;
+use codex_core::protocol::PlanApprovalRequestEvent;
 use codex_protocol::approvals::ElicitationRequestEvent;
 
 use super::ChatWidget;
@@ -16,6 +18,8 @@ pub(crate) enum QueuedInterrupt {
     ExecApproval(String, ExecApprovalRequestEvent),
     ApplyPatchApproval(String, ApplyPatchApprovalRequestEvent),
     Elicitation(ElicitationRequestEvent),
+    AskUserQuestion(String, AskUserQuestionRequestEvent),
+    PlanApproval(String, PlanApprovalRequestEvent),
     ExecBegin(ExecCommandBeginEvent),
     ExecEnd(ExecCommandEndEvent),
     McpBegin(McpToolCallBeginEvent),
@@ -57,6 +61,15 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::Elicitation(ev));
     }
 
+    pub(crate) fn push_ask_user_question(&mut self, id: String, ev: AskUserQuestionRequestEvent) {
+        self.queue
+            .push_back(QueuedInterrupt::AskUserQuestion(id, ev));
+    }
+
+    pub(crate) fn push_plan_approval(&mut self, id: String, ev: PlanApprovalRequestEvent) {
+        self.queue.push_back(QueuedInterrupt::PlanApproval(id, ev));
+    }
+
     pub(crate) fn push_exec_begin(&mut self, ev: ExecCommandBeginEvent) {
         self.queue.push_back(QueuedInterrupt::ExecBegin(ev));
     }
@@ -85,6 +98,12 @@ impl InterruptManager {
                     chat.handle_apply_patch_approval_now(id, ev)
                 }
                 QueuedInterrupt::Elicitation(ev) => chat.handle_elicitation_request_now(ev),
+                QueuedInterrupt::AskUserQuestion(id, ev) => {
+                    chat.handle_ask_user_question_request_now(id, ev)
+                }
+                QueuedInterrupt::PlanApproval(id, ev) => {
+                    chat.handle_plan_approval_request_now(id, ev)
+                }
                 QueuedInterrupt::ExecBegin(ev) => chat.handle_exec_begin_now(ev),
                 QueuedInterrupt::ExecEnd(ev) => chat.handle_exec_end_now(ev),
                 QueuedInterrupt::McpBegin(ev) => chat.handle_mcp_begin_now(ev),

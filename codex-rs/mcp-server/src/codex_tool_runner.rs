@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::ask_user_question::handle_ask_user_question_request;
 use crate::exec_approval::handle_exec_approval_request;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::OutgoingNotificationMeta;
@@ -15,10 +16,12 @@ use codex_core::NewConversation;
 use codex_core::config::Config as CodexConfig;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+use codex_core::protocol::AskUserQuestionRequestEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::Op;
+use codex_core::protocol::PlanApprovalResponse;
 use codex_core::protocol::Submission;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_protocol::ConversationId;
@@ -211,6 +214,32 @@ async fn run_codex_tool_session_inner(
                         // TODO: forward elicitation requests to the client?
                         continue;
                     }
+                    EventMsg::AskUserQuestionRequest(AskUserQuestionRequestEvent {
+                        call_id,
+                        questions,
+                    }) => {
+                        handle_ask_user_question_request(
+                            call_id,
+                            questions,
+                            outgoing.clone(),
+                            codex.clone(),
+                            request_id.clone(),
+                            request_id_str.clone(),
+                            event.id.clone(),
+                        )
+                        .await;
+                        continue;
+                    }
+                    EventMsg::PlanApprovalRequest(_) => {
+                        // Plan approval is not supported via MCP today; reject to avoid hanging.
+                        let _ = codex
+                            .submit(Op::ResolvePlanApproval {
+                                id: event.id.clone(),
+                                response: PlanApprovalResponse::Rejected,
+                            })
+                            .await;
+                        continue;
+                    }
                     EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
                         call_id,
                         turn_id: _,
@@ -299,6 +328,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ViewImageToolCall(_)
                     | EventMsg::RawResponseItem(_)
                     | EventMsg::EnteredReviewMode(_)
+                    | EventMsg::EnteredPlanMode(_)
                     | EventMsg::ItemStarted(_)
                     | EventMsg::ItemCompleted(_)
                     | EventMsg::AgentMessageContentDelta(_)
@@ -308,6 +338,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::UndoStarted(_)
                     | EventMsg::UndoCompleted(_)
                     | EventMsg::ExitedReviewMode(_)
+                    | EventMsg::ExitedPlanMode(_)
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::DeprecationNotice(_) => {
                         // For now, we do not do anything extra for these

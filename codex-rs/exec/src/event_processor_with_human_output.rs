@@ -134,11 +134,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         session_configured_event: &SessionConfiguredEvent,
     ) {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
-        ts_msg!(
-            self,
-            "OpenAI Codex v{} (research preview)\n--------",
-            VERSION
-        );
+        ts_msg!(self, "Codexel (v{})\n--------", VERSION);
 
         let mut entries =
             create_config_summary_entries(config, session_configured_event.model.as_str());
@@ -240,6 +236,35 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "{}",
                     "auto-cancelling (not supported in exec mode)".style(self.dimmed)
                 );
+            }
+            EventMsg::AskUserQuestionRequest(_) => {
+                ts_msg!(
+                    self,
+                    "{}",
+                    "AskUserQuestion request (auto-cancelling in exec mode)".style(self.dimmed)
+                );
+            }
+            EventMsg::PlanApprovalRequest(_) => {
+                ts_msg!(
+                    self,
+                    "{}",
+                    "PlanApproval request (auto-rejecting in exec mode)".style(self.dimmed)
+                );
+            }
+            EventMsg::EnteredPlanMode(req) => {
+                let goal = req.goal.trim();
+                if goal.is_empty() {
+                    ts_msg!(self, "{}", "plan mode: started".style(self.cyan));
+                } else {
+                    ts_msg!(self, "{} {}", "plan mode:".style(self.cyan), goal);
+                }
+            }
+            EventMsg::ExitedPlanMode(ev) => {
+                if ev.plan_output.is_some() {
+                    ts_msg!(self, "{}", "plan mode: finished".style(self.cyan));
+                } else {
+                    ts_msg!(self, "{}", "plan mode: ended".style(self.cyan));
+                }
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 let last_message = last_agent_message.as_deref();

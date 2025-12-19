@@ -121,6 +121,9 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "list_mcp_resource_templates",
         "read_mcp_resource",
         "update_plan",
+        "ask_user_question",
+        "approve_plan",
+        "propose_plan_variants",
         "apply_patch",
         "view_image",
     ];
@@ -323,7 +326,9 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
                 exclude_slash_tmp: true,
             }),
             model: Some("o3".to_string()),
+            plan_model: None,
             effort: Some(Some(ReasoningEffort::High)),
+            plan_effort: None,
             summary: Some(ReasoningSummary::Detailed),
         })
         .await?;
@@ -402,7 +407,9 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: None,
             model: None,
+            plan_model: None,
             effort: None,
+            plan_effort: None,
             summary: None,
         })
         .await?;

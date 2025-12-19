@@ -20,6 +20,7 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::openai_models::models_manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
+use crate::plan_output;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
@@ -36,6 +37,7 @@ use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::PlanOutputEvent;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
@@ -97,6 +99,9 @@ use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;
 use crate::protocol::AskForApproval;
+use crate::protocol::AskUserQuestion;
+use crate::protocol::AskUserQuestionRequestEvent;
+use crate::protocol::AskUserQuestionResponse;
 use crate::protocol::BackgroundEventEvent;
 use crate::protocol::DeprecationNoticeEvent;
 use crate::protocol::ErrorEvent;
@@ -104,6 +109,9 @@ use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::Op;
+use crate::protocol::PlanApprovalRequestEvent;
+use crate::protocol::PlanApprovalResponse;
+use crate::protocol::PlanProposal;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
@@ -130,6 +138,7 @@ use crate::skills::SkillMetadata;
 use crate::skills::SkillsManager;
 use crate::skills::build_skill_injections;
 use crate::state::ActiveTurn;
+use crate::state::PendingPlanApproval;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::tasks::GhostSnapshotTask;
@@ -259,6 +268,8 @@ impl Codex {
             model: model.clone(),
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: config.plan_model.clone(),
+            plan_model_reasoning_effort: config.plan_model_reasoning_effort,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             base_instructions: config.base_instructions.clone(),
@@ -356,6 +367,8 @@ pub(crate) struct Session {
 pub(crate) struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) client: ModelClient,
+    pub(crate) plan_model: Option<String>,
+    pub(crate) plan_reasoning_effort: Option<ReasoningEffortConfig>,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
@@ -401,6 +414,10 @@ pub(crate) struct SessionConfiguration {
     model_reasoning_effort: Option<ReasoningEffortConfig>,
     model_reasoning_summary: ReasoningSummaryConfig,
 
+    /// Optional model slug override used for planning flows (e.g. `/plan` mode and plan-variant subagents).
+    plan_model: Option<String>,
+    plan_model_reasoning_effort: Option<ReasoningEffortConfig>,
+
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
 
@@ -442,8 +459,14 @@ impl SessionConfiguration {
         if let Some(model) = updates.model.clone() {
             next_configuration.model = model;
         }
+        if let Some(plan_model) = updates.plan_model.clone() {
+            next_configuration.plan_model = Some(plan_model);
+        }
         if let Some(effort) = updates.reasoning_effort {
             next_configuration.model_reasoning_effort = effort;
+        }
+        if let Some(effort) = updates.plan_reasoning_effort {
+            next_configuration.plan_model_reasoning_effort = effort;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
@@ -467,7 +490,9 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) model: Option<String>,
+    pub(crate) plan_model: Option<String>,
     pub(crate) reasoning_effort: Option<Option<ReasoningEffortConfig>>,
+    pub(crate) plan_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
 }
@@ -521,8 +546,20 @@ impl Session {
         TurnContext {
             sub_id,
             client,
+            plan_model: session_configuration.plan_model.clone(),
+            plan_reasoning_effort: session_configuration.plan_model_reasoning_effort,
             cwd: session_configuration.cwd.clone(),
-            developer_instructions: session_configuration.developer_instructions.clone(),
+            developer_instructions: match session_configuration.session_source {
+                SessionSource::Cli | SessionSource::VSCode => {
+                    crate::tools::spec::prepend_ask_user_question_developer_instructions(
+                        session_configuration.developer_instructions.clone(),
+                    )
+                }
+                SessionSource::Exec
+                | SessionSource::Mcp
+                | SessionSource::SubAgent(_)
+                | SessionSource::Unknown => session_configuration.developer_instructions.clone(),
+            },
             base_instructions: session_configuration.base_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration.user_instructions.clone(),
@@ -614,7 +651,7 @@ impl Session {
                 None
             } else {
                 Some(format!(
-                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/openai/codex/blob/main/docs/config.md#feature-flags for details."
+                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/Ixe1/codexel/blob/main/docs/config.md#feature-flags for details."
                 ))
             };
             post_session_configured_events.push(Event {
@@ -845,19 +882,42 @@ impl Session {
         }
     }
 
+    pub(crate) async fn set_pending_approved_plan(&self, plan_output: Option<PlanOutputEvent>) {
+        let mut state = self.state.lock().await;
+        state.set_pending_approved_plan(plan_output);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn new_turn(
+        &self,
+        updates: SessionSettingsUpdate,
+    ) -> ConstraintResult<Arc<TurnContext>> {
+        let sub_id = self.next_internal_sub_id();
+        self.new_turn_with_sub_id(sub_id, updates).await
+    }
+
     pub(crate) async fn new_turn_with_sub_id(
         &self,
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<Arc<TurnContext>> {
-        let (session_configuration, sandbox_policy_changed) = {
+        let (session_configuration, sandbox_policy_changed, pending_approved_plan) = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
                 Ok(next) => {
                     let sandbox_policy_changed =
                         state.session_configuration.sandbox_policy != next.sandbox_policy;
                     state.session_configuration = next.clone();
-                    (next, sandbox_policy_changed)
+                    let pending_approved_plan = match next.session_source {
+                        SessionSource::Cli | SessionSource::VSCode => {
+                            state.take_pending_approved_plan()
+                        }
+                        SessionSource::Exec
+                        | SessionSource::Mcp
+                        | SessionSource::SubAgent(_)
+                        | SessionSource::Unknown => None,
+                    };
+                    (next, sandbox_policy_changed, pending_approved_plan)
                 }
                 Err(err) => {
                     drop(state);
@@ -883,6 +943,7 @@ impl Session {
                 session_configuration,
                 updates.final_output_json_schema,
                 sandbox_policy_changed,
+                pending_approved_plan,
             )
             .await)
     }
@@ -893,6 +954,7 @@ impl Session {
         session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
         sandbox_policy_changed: bool,
+        pending_approved_plan: Option<PlanOutputEvent>,
     ) -> Arc<TurnContext> {
         let per_turn_config = Self::build_per_turn_config(&session_configuration);
 
@@ -929,6 +991,21 @@ impl Session {
             self.conversation_id,
             sub_id,
         );
+        if let Some(out) = pending_approved_plan {
+            let prelude = plan_output::render_approved_plan_developer_prelude(&out);
+            turn_context.developer_instructions =
+                Some(match turn_context.developer_instructions.take() {
+                    Some(existing) => {
+                        let existing = existing.trim();
+                        if existing.is_empty() {
+                            prelude
+                        } else {
+                            format!("{prelude}\n\n{existing}")
+                        }
+                    }
+                    None => prelude,
+                });
+        }
         if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
         }
@@ -945,7 +1022,7 @@ impl Session {
             let state = self.state.lock().await;
             state.session_configuration.clone()
         };
-        self.new_turn_from_configuration(sub_id, session_configuration, None, false)
+        self.new_turn_from_configuration(sub_id, session_configuration, None, false, None)
             .await
     }
 
@@ -1160,6 +1237,138 @@ impl Session {
             }
             None => {
                 warn!("No pending approval found for sub_id: {sub_id}");
+            }
+        }
+    }
+
+    pub async fn request_ask_user_question(
+        &self,
+        turn_context: &TurnContext,
+        call_id: String,
+        questions: Vec<AskUserQuestion>,
+    ) -> AskUserQuestionResponse {
+        let sub_id = turn_context.sub_id.clone();
+        let (tx, rx) = oneshot::channel();
+
+        let prev_entry = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.insert_pending_user_question(sub_id.clone(), tx)
+                }
+                None => None,
+            }
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending AskUserQuestion for sub_id: {sub_id}");
+        }
+
+        let event =
+            EventMsg::AskUserQuestionRequest(AskUserQuestionRequestEvent { call_id, questions });
+        self.send_event(turn_context, event).await;
+        rx.await.unwrap_or(AskUserQuestionResponse::Cancelled)
+    }
+
+    pub async fn notify_ask_user_question(&self, sub_id: &str, response: AskUserQuestionResponse) {
+        let entry = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.remove_pending_user_question(sub_id)
+                }
+                None => None,
+            }
+        };
+        match entry {
+            Some(tx) => {
+                tx.send(response).ok();
+            }
+            None => {
+                warn!("No pending AskUserQuestion found for sub_id: {sub_id}");
+            }
+        }
+    }
+
+    pub async fn request_plan_approval(
+        &self,
+        turn_context: &TurnContext,
+        call_id: String,
+        proposal: PlanProposal,
+    ) -> PlanApprovalResponse {
+        let sub_id = turn_context.sub_id.clone();
+        let (tx, rx) = oneshot::channel();
+
+        let prev_entry = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.insert_pending_plan_approval(
+                        sub_id.clone(),
+                        PendingPlanApproval {
+                            proposal: proposal.clone(),
+                            tx,
+                        },
+                    )
+                }
+                None => None,
+            }
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending PlanApproval for sub_id: {sub_id}");
+        }
+
+        let event = EventMsg::PlanApprovalRequest(PlanApprovalRequestEvent { call_id, proposal });
+        self.send_event(turn_context, event).await;
+        rx.await.unwrap_or(PlanApprovalResponse::Rejected)
+    }
+
+    pub async fn notify_plan_approval(&self, sub_id: &str, response: PlanApprovalResponse) {
+        let (entry, turn_context) = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let turn_context = at
+                        .tasks
+                        .get(sub_id)
+                        .map(|task| Arc::clone(&task.turn_context));
+                    let mut ts = at.turn_state.lock().await;
+                    (ts.remove_pending_plan_approval(sub_id), turn_context)
+                }
+                None => (None, None),
+            }
+        };
+        match entry {
+            Some(pending) => {
+                const APPROVED_MESSAGE: &str = "Plan approved; continuing...";
+
+                if response == PlanApprovalResponse::Approved {
+                    if let Some(turn_context) = &turn_context {
+                        self.send_event(
+                            turn_context.as_ref(),
+                            EventMsg::BackgroundEvent(BackgroundEventEvent {
+                                message: APPROVED_MESSAGE.to_string(),
+                            }),
+                        )
+                        .await;
+
+                        let mut update = pending.proposal.plan.clone();
+                        update.explanation = Some(APPROVED_MESSAGE.to_string());
+                        self.send_event(turn_context.as_ref(), EventMsg::PlanUpdate(update))
+                            .await;
+                    } else {
+                        warn!(
+                            "No active task context found for approved PlanApproval: sub_id={sub_id}"
+                        );
+                    }
+                }
+
+                pending.tx.send(response).ok();
+            }
+            None => {
+                warn!("No pending PlanApproval found for sub_id: {sub_id}");
             }
         }
     }
@@ -1606,7 +1815,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 approval_policy,
                 sandbox_policy,
                 model,
+                plan_model,
                 effort,
+                plan_effort,
                 summary,
             } => {
                 handlers::override_turn_context(
@@ -1617,7 +1828,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         approval_policy,
                         sandbox_policy,
                         model,
+                        plan_model,
                         reasoning_effort: effort,
+                        plan_reasoning_effort: plan_effort,
                         reasoning_summary: summary,
                         ..Default::default()
                     },
@@ -1672,6 +1885,12 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             } => {
                 handlers::resolve_elicitation(&sess, server_name, request_id, decision).await;
             }
+            Op::ResolveAskUserQuestion { id, response } => {
+                handlers::resolve_ask_user_question(&sess, id, response).await;
+            }
+            Op::ResolvePlanApproval { id, response } => {
+                handlers::resolve_plan_approval(&sess, id, response).await;
+            }
             Op::Shutdown => {
                 if handlers::shutdown(&sess, sub.id.clone()).await {
                     break;
@@ -1679,6 +1898,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             }
             Op::Review { review_request } => {
                 handlers::review(&sess, &config, sub.id.clone(), review_request).await;
+            }
+            Op::Plan { plan_request } => {
+                handlers::plan(&sess, &config, sub.id.clone(), plan_request).await;
             }
             _ => {} // Ignore unknown ops; enum is non_exhaustive to allow extensions.
         }
@@ -1699,10 +1921,12 @@ mod handlers {
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::review_prompts::resolve_review_request;
     use crate::tasks::CompactTask;
+    use crate::tasks::PlanTask;
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
     use codex_protocol::custom_prompts::CustomPrompt;
+    use codex_protocol::protocol::AskUserQuestionResponse;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
@@ -1710,6 +1934,8 @@ mod handlers {
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::ListSkillsResponseEvent;
     use codex_protocol::protocol::Op;
+    use codex_protocol::protocol::PlanApprovalResponse;
+    use codex_protocol::protocol::PlanRequest;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::SkillsListEntry;
@@ -1769,7 +1995,9 @@ mod handlers {
                     approval_policy: Some(approval_policy),
                     sandbox_policy: Some(sandbox_policy),
                     model: Some(model),
+                    plan_model: None,
                     reasoning_effort: Some(effort),
+                    plan_reasoning_effort: None,
                     reasoning_summary: Some(summary),
                     final_output_json_schema: Some(final_output_json_schema),
                 },
@@ -1842,6 +2070,22 @@ mod handlers {
                 "failed to resolve elicitation request in session"
             );
         }
+    }
+
+    pub async fn resolve_ask_user_question(
+        sess: &Arc<Session>,
+        id: String,
+        response: AskUserQuestionResponse,
+    ) {
+        sess.notify_ask_user_question(&id, response).await;
+    }
+
+    pub async fn resolve_plan_approval(
+        sess: &Arc<Session>,
+        id: String,
+        response: PlanApprovalResponse,
+    ) {
+        sess.notify_plan_approval(&id, response).await;
     }
 
     /// Propagate a user's exec approval decision to the session.
@@ -2089,6 +2333,29 @@ mod handlers {
             }
         }
     }
+
+    pub async fn plan(
+        sess: &Arc<Session>,
+        _config: &Arc<Config>,
+        sub_id: String,
+        plan_request: PlanRequest,
+    ) {
+        let tc = match sess
+            .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
+            .await
+        {
+            Ok(tc) => tc,
+            Err(_) => return,
+        };
+        sess.spawn_task(
+            tc.clone(),
+            Vec::<UserInput>::new(),
+            PlanTask::new(plan_request.clone()),
+        )
+        .await;
+        sess.send_event(&tc, EventMsg::EnteredPlanMode(plan_request))
+            .await;
+    }
 }
 
 /// Spawn a review thread using the given prompt.
@@ -2148,6 +2415,8 @@ async fn spawn_review_thread(
     let review_turn_context = TurnContext {
         sub_id: sub_id.to_string(),
         client,
+        plan_model: parent_turn_context.plan_model.clone(),
+        plan_reasoning_effort: parent_turn_context.plan_reasoning_effort,
         tools_config,
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
@@ -2756,6 +3025,10 @@ mod tests {
     use crate::shell::default_user_shell;
     use crate::tools::format_exec_output_str;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::plan_tool::PlanItemArg;
+    use codex_protocol::plan_tool::StepStatus;
+    use codex_protocol::plan_tool::UpdatePlanArgs;
+    use codex_protocol::protocol::SubAgentSource;
 
     use crate::protocol::CompactedItem;
     use crate::protocol::CreditsSnapshot;
@@ -2847,6 +3120,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -2919,6 +3194,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3123,6 +3400,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3214,6 +3493,8 @@ mod tests {
             model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
+            plan_model: None,
+            plan_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3277,6 +3558,83 @@ mod tests {
         });
 
         (session, turn_context, rx_event)
+    }
+
+    fn sample_plan_output_event() -> PlanOutputEvent {
+        PlanOutputEvent {
+            title: "Test plan".to_string(),
+            summary: "Test summary".to_string(),
+            plan: UpdatePlanArgs {
+                explanation: Some("Test explanation".to_string()),
+                plan: vec![PlanItemArg {
+                    step: "Do the thing".to_string(),
+                    status: StepStatus::Pending,
+                }],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_plan_is_pinned_into_next_cli_turn_developer_instructions() {
+        let (session, _turn_context, _rx) = make_session_and_context_with_rx();
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration.session_source = SessionSource::Cli;
+        }
+
+        let plan_output = sample_plan_output_event();
+        session
+            .set_pending_approved_plan(Some(plan_output.clone()))
+            .await;
+
+        let turn = session
+            .new_turn(SessionSettingsUpdate::default())
+            .await
+            .expect("create turn");
+        let developer_instructions = turn.developer_instructions.as_deref().unwrap_or_default();
+        assert!(developer_instructions.starts_with("## Approved Plan (Pinned)"));
+        assert!(developer_instructions.contains(plan_output.title.as_str()));
+
+        {
+            let state = session.state.lock().await;
+            assert!(state.pending_approved_plan.is_none());
+        }
+
+        let next_turn = session
+            .new_turn(SessionSettingsUpdate::default())
+            .await
+            .expect("create second turn");
+        let developer_instructions = next_turn
+            .developer_instructions
+            .as_deref()
+            .unwrap_or_default();
+        assert!(!developer_instructions.contains("## Approved Plan (Pinned)"));
+    }
+
+    #[tokio::test]
+    async fn approved_plan_is_not_consumed_for_subagent_turns() {
+        let (session, _turn_context, _rx) = make_session_and_context_with_rx();
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration.session_source =
+                SessionSource::SubAgent(SubAgentSource::Other("test".to_string()));
+        }
+
+        session
+            .set_pending_approved_plan(Some(sample_plan_output_event()))
+            .await;
+
+        let turn = session
+            .new_turn(SessionSettingsUpdate::default())
+            .await
+            .expect("create turn");
+        let developer_instructions = turn.developer_instructions.as_deref().unwrap_or_default();
+        assert!(!developer_instructions.contains("## Approved Plan (Pinned)"));
+
+        {
+            let state = session.state.lock().await;
+            assert!(state.pending_approved_plan.is_some());
+        }
     }
 
     #[tokio::test]

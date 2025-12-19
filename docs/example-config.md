@@ -1,11 +1,11 @@
 # Example config.toml
 
-Use this example configuration as a starting point. For an explanation of each field and additional context, see [Configuration](./config.md). Copy the snippet below to `~/.codex/config.toml` and adjust values as needed.
+Use this example configuration as a starting point. For an explanation of each field and additional context, see [Configuration](./config.md). Copy the snippet below to `~/.codexel/config.toml` and adjust values as needed.
 
 ```toml
-# Codex example configuration (config.toml)
+# Codexel example configuration (config.toml)
 #
-# This file lists all keys Codex reads from config.toml, their default values,
+# This file lists all keys Codexel reads from config.toml, their default values,
 # and concise explanations. Values here mirror the effective defaults compiled
 # into the CLI. Adjust as needed.
 #
@@ -18,8 +18,11 @@ Use this example configuration as a starting point. For an explanation of each f
 # Core Model Selection
 ################################################################################
 
-# Primary model used by Codex. Default: "gpt-5.1-codex-max" on all platforms.
+# Primary model used by Codexel. Default: "gpt-5.1-codex-max" on all platforms.
 model = "gpt-5.1-codex-max"
+
+# Optional model used for `/plan` (defaults to `model` when unset).
+# plan_model = "gpt-5.1-codex"
 
 # Model used by the /review feature (code reviews). Default: "gpt-5.1-codex-max".
 review_model = "gpt-5.1-codex-max"
@@ -27,7 +30,7 @@ review_model = "gpt-5.1-codex-max"
 # Provider id selected from [model_providers]. Default: "openai".
 model_provider = "openai"
 
-# Optional manual model metadata. When unset, Codex auto-detects from model.
+# Optional manual model metadata. When unset, Codexel auto-detects from model.
 # Uncomment to force values.
 # model_context_window = 128000       # tokens; default: auto for model
 # model_auto_compact_token_limit = 0  # disable/override auto; default: model family specific
@@ -39,6 +42,9 @@ model_provider = "openai"
 
 # Reasoning effort: minimal | low | medium | high | xhigh (default: medium; xhigh on gpt-5.1-codex-max and gpt-5.2)
 model_reasoning_effort = "medium"
+
+# Optional reasoning effort for `/plan` (defaults to `model_reasoning_effort` when unset).
+# plan_model_reasoning_effort = "medium"
 
 # Reasoning summary: auto | concise | detailed | none (default: auto)
 model_reasoning_summary = "auto"
@@ -362,6 +368,6 @@ exporter = "none"
 
 # [otel.exporter."otlp-http".tls]
 # ca-certificate = "certs/otel-ca.pem"
-# client-certificate = "/etc/codex/certs/client.pem"
-# client-private-key = "/etc/codex/certs/client-key.pem"
+# client-certificate = "/etc/codexel/certs/client.pem"
+# client-private-key = "/etc/codexel/certs/client-key.pem"
 ```

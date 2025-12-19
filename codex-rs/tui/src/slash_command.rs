@@ -13,10 +13,12 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    PlanModel,
     Approvals,
     Experimental,
     Skills,
     Review,
+    Plan,
     New,
     Resume,
     Init,
@@ -43,6 +45,7 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Plan => "plan a task before making changes",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
@@ -51,6 +54,7 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Experimental => "toggle beta features",
             SlashCommand::Mcp => "list configured MCP tools",
@@ -75,9 +79,11 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Undo
             | SlashCommand::Model
+            | SlashCommand::PlanModel
             | SlashCommand::Approvals
             | SlashCommand::Experimental
             | SlashCommand::Review
+            | SlashCommand::Plan
             | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Mention

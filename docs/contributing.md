@@ -14,11 +14,22 @@ If you want to add a new feature or change the behavior of an existing one, plea
 - Keep your changes focused. Multiple unrelated fixes should be opened as separate PRs.
 - Ensure your change is free of lint warnings and test failures.
 
+### Changelog (Codexel fork)
+
+- The changelog tracks Codexel-only changes (commits not in `upstream/main`).
+- Refresh generated Details blocks with `scripts/gen-changelog.ps1` (Windows) or
+  `bash scripts/gen-changelog.sh` (macOS/Linux).
+- Use `--check` in CI to ensure the changelog is up to date.
+- When cutting a release, pin the release commit and upstream baseline in
+  `CHANGELOG.md`, then update the generated range for that release section.
+- Rollback is just reverting `CHANGELOG.md`, `cliff.toml`, and the generator
+  scripts if the changelog workflow needs to be removed.
+
 ### Writing high-impact code changes
 
 1. **Start with an issue.** Open a new one or comment on an existing discussion so we can agree on the solution before code is written.
 2. **Add or update tests.** Every new feature or bug-fix should come with test coverage that fails before your change and passes afterwards. 100% coverage is not required, but aim for meaningful assertions.
-3. **Document behaviour.** If your change affects user-facing behaviour, update the README, inline help (`codex --help`), or relevant example projects.
+3. **Document behaviour.** If your change affects user-facing behaviour, update the README, inline help (`codexel --help`), or relevant example projects. Avoid changing the system prompt unless absolutely necessary; prefer adding developer-instruction guidance that is easy to merge and iterate on.
 4. **Keep commits atomic.** Each commit should compile and the tests should pass. This makes reviews and potential rollbacks easier.
 
 ### Opening a pull request
@@ -46,7 +57,7 @@ If you want to add a new feature or change the behavior of an existing one, plea
 
 If you run into problems setting up the project, would like feedback on an idea, or just want to say _hi_ - please open a Discussion or jump into the relevant issue. We are happy to help.
 
-Together we can make Codex CLI an incredible tool. **Happy hacking!** :rocket:
+Together we can make Codexel an incredible tool. **Happy hacking!** :rocket:
 
 ### Contributor license agreement (CLA)
 

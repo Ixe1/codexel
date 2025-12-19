@@ -27,6 +27,7 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
 use codex_core::protocol::ExecPolicyAmendment;
+use codex_core::protocol::ExitedPlanModeEvent;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpStartupStatus;
@@ -34,6 +35,7 @@ use codex_core::protocol::McpStartupUpdateEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
+use codex_core::protocol::PlanOutputEvent;
 use codex_core::protocol::RateLimitWindow;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
@@ -150,6 +152,90 @@ fn resumed_initial_messages_render_history() {
     assert!(
         text_blob.contains("assistant reply"),
         "expected replayed agent message",
+    );
+}
+
+#[test]
+fn resumed_session_does_not_start_rate_limit_poller_until_input() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None);
+    set_chatgpt_auth(&mut chat);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(
+        chat.rate_limit_poller.is_none(),
+        "expected no rate limit polling until user input"
+    );
+}
+
+#[test]
+fn resumed_session_does_not_auto_execute_plan() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None);
+    set_chatgpt_auth(&mut chat);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![EventMsg::ExitedPlanMode(ExitedPlanModeEvent {
+            plan_output: Some(PlanOutputEvent {
+                title: "Example".to_string(),
+                summary: "Summary".to_string(),
+                plan: UpdatePlanArgs {
+                    explanation: None,
+                    plan: vec![PlanItemArg {
+                        step: "Step 1".to_string(),
+                        status: StepStatus::Pending,
+                    }],
+                },
+            }),
+        })]),
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    let mut saw_user_turn = false;
+    while let Ok(op) = op_rx.try_recv() {
+        if matches!(op, Op::UserTurn { .. } | Op::UserInput { .. }) {
+            saw_user_turn = true;
+            break;
+        }
+    }
+
+    assert!(
+        !saw_user_turn,
+        "expected no auto-execute user turn after resume replay"
     );
 }
 
@@ -338,6 +424,39 @@ async fn helpers_are_available_and_do_not_panic() {
     let _ = &mut w;
 }
 
+#[test]
+fn exiting_plan_mode_with_approved_output_auto_executes() {
+    let (mut chat, _app_event_rx, mut op_rx) = make_chatwidget_manual(None);
+
+    chat.on_exited_plan_mode(ExitedPlanModeEvent {
+        plan_output: Some(PlanOutputEvent {
+            title: "Example".to_string(),
+            summary: "Summary".to_string(),
+            plan: UpdatePlanArgs {
+                explanation: None,
+                plan: vec![PlanItemArg {
+                    step: "Step 1".to_string(),
+                    status: StepStatus::Pending,
+                }],
+            },
+        }),
+    });
+
+    let op = op_rx
+        .try_recv()
+        .expect("expected an auto-execute user turn");
+    let items = match op {
+        Op::UserTurn { items, .. } | Op::UserInput { items } => items,
+        other => panic!("unexpected op: {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![codex_protocol::user_input::UserInput::Text {
+            text: "Proceed with the approved plan.".to_string(),
+        }]
+    );
+}
+
 // --- Helpers for tests that need direct construction and event draining ---
 fn make_chatwidget_manual(
     model_override: Option<&str>,
@@ -381,6 +500,7 @@ fn make_chatwidget_manual(
         token_info: None,
         rate_limit_snapshot: None,
         plan_type: None,
+        last_plan_update_key: None,
         rate_limit_warnings: RateLimitWarningState::default(),
         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
         rate_limit_poller: None,
@@ -394,8 +514,9 @@ fn make_chatwidget_manual(
         interrupts: InterruptManager::new(),
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
-        current_status_header: String::from("Working"),
+        current_status_header: String::from("Ready"),
         retry_status_header: None,
+        plan_variants_progress: None,
         conversation_id: None,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
@@ -1956,7 +2077,7 @@ fn model_reasoning_selection_popup_snapshot() {
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(crate::app_event::ModelPickerTarget::Chat, preset);
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_reasoning_selection_popup", popup);
@@ -1970,7 +2091,7 @@ fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
     chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::XHigh);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(crate::app_event::ModelPickerTarget::Chat, preset);
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_reasoning_selection_popup_extra_high_warning", popup);
@@ -1983,7 +2104,7 @@ fn reasoning_popup_shows_extra_high_with_space() {
     set_chatgpt_auth(&mut chat);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(crate::app_event::ModelPickerTarget::Chat, preset);
 
     let popup = render_bottom_popup(&chat, 120);
     assert!(
@@ -2016,7 +2137,7 @@ fn single_reasoning_option_skips_selection() {
         show_in_picker: true,
         supported_in_api: true,
     };
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(crate::app_event::ModelPickerTarget::Chat, preset);
 
     let popup = render_bottom_popup(&chat, 80);
     assert!(
@@ -2065,7 +2186,7 @@ fn reasoning_popup_escape_returns_to_model_popup() {
     chat.open_model_popup();
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
-    chat.open_reasoning_popup(preset);
+    chat.open_reasoning_popup(crate::app_event::ModelPickerTarget::Chat, preset);
 
     let before_escape = render_bottom_popup(&chat, 80);
     assert!(before_escape.contains("Select Reasoning Level"));
@@ -3108,6 +3229,36 @@ fn plan_update_renders_history_cell() {
     assert!(blob.contains("Explore codebase"));
     assert!(blob.contains("Implement feature"));
     assert!(blob.contains("Write tests"));
+}
+
+#[test]
+fn plan_update_dedupes_identical_updates() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
+    let update = UpdatePlanArgs {
+        explanation: Some("Updating plan".to_string()),
+        plan: vec![
+            PlanItemArg {
+                step: "Explore codebase".into(),
+                status: StepStatus::Completed,
+            },
+            PlanItemArg {
+                step: "Implement feature".into(),
+                status: StepStatus::InProgress,
+            },
+        ],
+    };
+
+    chat.handle_codex_event(Event {
+        id: "sub-1".into(),
+        msg: EventMsg::PlanUpdate(update.clone()),
+    });
+    chat.handle_codex_event(Event {
+        id: "sub-1".into(),
+        msg: EventMsg::PlanUpdate(update),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected a single plan update cell");
 }
 
 #[test]
