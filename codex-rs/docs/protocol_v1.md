@@ -77,6 +77,8 @@ For complete documentation of the `Op` and `EventMsg` variants, refer to [protoc
   - `EventMsg::ExecApprovalRequest` – Request approval from user to execute a command
   - `EventMsg::AskUserQuestionRequest` – Ask the user a multiple-choice question and await an answer
   - `EventMsg::PlanApprovalRequest` – Ask the user to approve / revise / reject a proposed plan
+  - `EventMsg::SubAgentToolCallBegin` – Tool call begin event for `spawn_subagent` (description + label + prompt)
+  - `EventMsg::SubAgentToolCallEnd` – Tool call end event for `spawn_subagent` (duration + tokens + result)
   - `EventMsg::EnteredPlanMode` – Notify the UI that plan mode started
   - `EventMsg::ExitedPlanMode` – Notify the UI that plan mode ended (optional final plan included)
   - `EventMsg::TaskComplete` – A task completed successfully
@@ -204,6 +206,35 @@ sequenceDiagram
     task->>user: Event::AskUserQuestionRequest
     user->>task: Op::ResolveAskUserQuestion
     task->>agent: tool output (answers)
+    agent->>task: response (continue)
+    task->>-user: Event::AgentMessage
+```
+
+### SpawnSubagent (read-only subagent)
+
+Spawning a read-only subagent to answer a focused prompt, then returning its response
+as tool output.
+
+```mermaid
+sequenceDiagram
+    box UI
+    participant user as User
+    end
+    box Daemon
+    participant session as Session
+    participant task as Task
+    end
+    box Rest API
+    participant agent as Model
+    participant subagent as Subagent Model
+    end
+    user->>session: Op::UserInput
+    session-->>+task: start task
+    task->>agent: prompt
+    agent->>task: response (tool call: spawn_subagent)
+    task->>subagent: subagent prompt
+    subagent->>task: response
+    task->>agent: tool output (label + response)
     agent->>task: response (continue)
     task->>-user: Event::AgentMessage
 ```

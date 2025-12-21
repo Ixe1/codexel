@@ -7,11 +7,13 @@ use crate::exec_cell::output_lines;
 use crate::exec_cell::spinner;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::live_wrap::take_prefix_by_width;
 use crate::markdown::append_markdown;
 use crate::render::line_utils::line_to_static;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::render::renderable::Renderable;
+use crate::shimmer::shimmer_spans;
 use crate::style::user_message_style;
 use crate::text_formatting::format_and_truncate_tool_result;
 use crate::text_formatting::truncate_text;
@@ -30,6 +32,7 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_core::protocol::SubAgentInvocation;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::openai_models::ReasoningSummaryFormat;
 use codex_protocol::plan_tool::PlanItemArg;
@@ -56,6 +59,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// Represents an event to display in the conversation history. Returns its
@@ -439,6 +443,179 @@ pub(crate) fn new_unified_exec_interaction(
     stdin: String,
 ) -> UnifiedExecInteractionCell {
     UnifiedExecInteractionCell::new(command_display, stdin)
+}
+
+#[derive(Debug)]
+// Live-only wait cell that shimmers while we poll; flushes into a static entry later.
+pub(crate) struct UnifiedExecWaitCell {
+    command_display: Option<String>,
+    animations_enabled: bool,
+}
+
+impl UnifiedExecWaitCell {
+    pub(crate) fn new(command_display: Option<String>, animations_enabled: bool) -> Self {
+        Self {
+            command_display: command_display.filter(|display| !display.is_empty()),
+            animations_enabled,
+        }
+    }
+
+    pub(crate) fn matches(&self, command_display: Option<&str>) -> bool {
+        let command_display = command_display.filter(|display| !display.is_empty());
+        match (self.command_display.as_deref(), command_display) {
+            (Some(current), Some(incoming)) => current == incoming,
+            _ => true,
+        }
+    }
+
+    pub(crate) fn update_command_display(&mut self, command_display: Option<String>) {
+        if self.command_display.is_none() {
+            self.command_display = command_display.filter(|display| !display.is_empty());
+        }
+    }
+
+    pub(crate) fn command_display(&self) -> Option<String> {
+        self.command_display.clone()
+    }
+}
+
+impl HistoryCell for UnifiedExecWaitCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let wrap_width = width as usize;
+
+        let mut header_spans = vec!["• ".dim()];
+        if self.animations_enabled {
+            header_spans.extend(shimmer_spans("Waiting for background terminal"));
+        } else {
+            header_spans.push("Waiting for background terminal".bold());
+        }
+        if let Some(command) = &self.command_display
+            && !command.is_empty()
+        {
+            header_spans.push(" · ".dim());
+            header_spans.push(command.clone().dim());
+        }
+        let header = Line::from(header_spans);
+
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let header_wrapped = word_wrap_line(&header, RtOptions::new(wrap_width));
+        push_owned_lines(&header_wrapped, &mut out);
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_unified_exec_wait_live(
+    command_display: Option<String>,
+    animations_enabled: bool,
+) -> UnifiedExecWaitCell {
+    UnifiedExecWaitCell::new(command_display, animations_enabled)
+}
+
+#[derive(Debug)]
+struct UnifiedExecSessionsCell {
+    sessions: Vec<String>,
+}
+
+impl UnifiedExecSessionsCell {
+    fn new(sessions: Vec<String>) -> Self {
+        Self { sessions }
+    }
+}
+
+impl HistoryCell for UnifiedExecSessionsCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width as usize;
+        let max_sessions = 16usize;
+        let mut out: Vec<Line<'static>> = Vec::new();
+        out.push(vec!["Background terminals".bold()].into());
+        out.push("".into());
+
+        if self.sessions.is_empty() {
+            out.push("  • No background terminals running.".italic().into());
+            return out;
+        }
+
+        let prefix = "  • ";
+        let prefix_width = UnicodeWidthStr::width(prefix);
+        let truncation_suffix = " [...]";
+        let truncation_suffix_width = UnicodeWidthStr::width(truncation_suffix);
+        let mut shown = 0usize;
+        for command in &self.sessions {
+            if shown >= max_sessions {
+                break;
+            }
+            let (snippet, snippet_truncated) = {
+                let (first_line, has_more_lines) = match command.split_once('\n') {
+                    Some((first, _)) => (first, true),
+                    None => (command.as_str(), false),
+                };
+                let max_graphemes = 80;
+                let mut graphemes = first_line.grapheme_indices(true);
+                if let Some((byte_index, _)) = graphemes.nth(max_graphemes) {
+                    (first_line[..byte_index].to_string(), true)
+                } else {
+                    (first_line.to_string(), has_more_lines)
+                }
+            };
+            if wrap_width <= prefix_width {
+                out.push(Line::from(prefix.dim()));
+                shown += 1;
+                continue;
+            }
+            let budget = wrap_width.saturating_sub(prefix_width);
+            let mut needs_suffix = snippet_truncated;
+            if !needs_suffix {
+                let (_, remainder, _) = take_prefix_by_width(&snippet, budget);
+                if !remainder.is_empty() {
+                    needs_suffix = true;
+                }
+            }
+            if needs_suffix && budget > truncation_suffix_width {
+                let available = budget.saturating_sub(truncation_suffix_width);
+                let (truncated, _, _) = take_prefix_by_width(&snippet, available);
+                out.push(vec![prefix.dim(), truncated.cyan(), truncation_suffix.dim()].into());
+            } else {
+                let (truncated, _, _) = take_prefix_by_width(&snippet, budget);
+                out.push(vec![prefix.dim(), truncated.cyan()].into());
+            }
+            shown += 1;
+        }
+
+        let remaining = self.sessions.len().saturating_sub(shown);
+        if remaining > 0 {
+            let more_text = format!("... and {remaining} more running");
+            if wrap_width <= prefix_width {
+                out.push(Line::from(prefix.dim()));
+            } else {
+                let budget = wrap_width.saturating_sub(prefix_width);
+                let (truncated, _, _) = take_prefix_by_width(&more_text, budget);
+                out.push(vec![prefix.dim(), truncated.dim()].into());
+            }
+        }
+
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_unified_exec_sessions_output(sessions: Vec<String>) -> CompositeHistoryCell {
+    let command = PlainHistoryCell::new(vec!["/ps".magenta().into()]);
+    let summary = UnifiedExecSessionsCell::new(sessions);
+    CompositeHistoryCell::new(vec![Box::new(command), Box::new(summary)])
 }
 
 fn truncate_exec_snippet(full_cmd: &str) -> String {
@@ -1079,12 +1256,247 @@ impl HistoryCell for McpToolCallCell {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SubAgentToolCallCell {
+    call_id: String,
+    invocation: SubAgentInvocation,
+    start_time: Instant,
+    duration: Option<Duration>,
+    activity: Option<String>,
+    tokens: Option<i64>,
+    result: Option<Result<String, String>>,
+}
+
+impl SubAgentToolCallCell {
+    pub(crate) fn new(call_id: String, invocation: SubAgentInvocation) -> Self {
+        Self {
+            call_id,
+            invocation,
+            start_time: Instant::now(),
+            duration: None,
+            activity: None,
+            tokens: None,
+            result: None,
+        }
+    }
+
+    pub(crate) fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        duration: Duration,
+        tokens: Option<i64>,
+        result: Result<String, String>,
+    ) {
+        self.duration = Some(duration);
+        self.tokens = tokens;
+        self.result = Some(result);
+    }
+
+    pub(crate) fn set_activity(&mut self, activity: String) {
+        let activity = activity.trim();
+        if activity.is_empty() {
+            self.activity = None;
+        } else {
+            self.activity = Some(activity.to_string());
+        }
+    }
+
+    pub(crate) fn set_tokens(&mut self, tokens: i64) {
+        self.tokens = if tokens > 0 { Some(tokens) } else { None };
+    }
+
+    fn success(&self) -> Option<bool> {
+        match self.result.as_ref() {
+            Some(Ok(_)) => Some(true),
+            Some(Err(_)) => Some(false),
+            None => None,
+        }
+    }
+
+    pub(crate) fn mark_failed(&mut self) {
+        let elapsed = self.start_time.elapsed();
+        self.duration = Some(elapsed);
+        self.tokens = None;
+        self.result = Some(Err("interrupted".to_string()));
+    }
+}
+
+impl HistoryCell for SubAgentToolCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let status = self.success();
+        let indicator = match status {
+            Some(true) => "✓".green(),
+            Some(false) => "✗".red(),
+            None => "●".cyan(),
+        };
+
+        let summary = subagent_summary(&self.invocation);
+        let elapsed = self.duration.unwrap_or_else(|| self.start_time.elapsed());
+        let elapsed = fmt_subagent_duration(elapsed);
+
+        let mut header_spans: Vec<Span<'static>> = vec![
+            indicator,
+            " ".into(),
+            "Subagent:".bold(),
+            " ".into(),
+            summary.into(),
+        ];
+        let mut meta = format!(" ({elapsed}");
+        if let Some(tokens) = self.tokens.and_then(fmt_subagent_tokens) {
+            meta.push_str(&format!(", {tokens} tok"));
+        }
+        meta.push(')');
+        header_spans.push(meta.dim());
+
+        let mut lines: Vec<Line<'static>> = vec![header_spans.into()];
+
+        let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+        let activity = self.activity.as_deref().unwrap_or("working…");
+        let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
+        let detail_span = match &self.result {
+            Some(Ok(_)) => "done".dim(),
+            Some(Err(_)) => "failed".red(),
+            None => activity.to_string().dim(),
+        };
+
+        if !activity.is_empty() || self.result.is_some() {
+            let line = Line::from(vec![detail_span]);
+            let wrapped = word_wrap_line(
+                &line,
+                RtOptions::new(detail_wrap_width)
+                    .initial_indent("".into())
+                    .subsequent_indent("".into()),
+            );
+            let detail_lines = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(detail_lines, "  └ ".dim(), "    ".dim()));
+        }
+
+        lines
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SubAgentToolCallGroupCell {
+    calls: Vec<SubAgentToolCallCell>,
+}
+
+impl SubAgentToolCallGroupCell {
+    pub(crate) fn new() -> Self {
+        Self { calls: Vec::new() }
+    }
+
+    pub(crate) fn can_accept_begin(&self) -> bool {
+        self.calls
+            .iter()
+            .filter(|cell| cell.result.is_none())
+            .count()
+            < 3
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.calls.iter().all(|cell| cell.result.is_some())
+    }
+
+    pub(crate) fn push_begin(&mut self, call_id: String, invocation: SubAgentInvocation) {
+        self.calls
+            .push(SubAgentToolCallCell::new(call_id, invocation));
+    }
+
+    pub(crate) fn contains_call_id(&self, call_id: &str) -> bool {
+        self.calls.iter().any(|cell| cell.call_id() == call_id)
+    }
+
+    pub(crate) fn set_activity(&mut self, call_id: &str, activity: String) -> bool {
+        match self
+            .calls
+            .iter_mut()
+            .rev()
+            .find(|cell| cell.call_id() == call_id)
+        {
+            Some(cell) => {
+                cell.set_activity(activity);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn set_tokens(&mut self, call_id: &str, tokens: i64) -> bool {
+        match self
+            .calls
+            .iter_mut()
+            .rev()
+            .find(|cell| cell.call_id() == call_id)
+        {
+            Some(cell) => {
+                cell.set_tokens(tokens);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn complete_call(
+        &mut self,
+        call_id: &str,
+        duration: Duration,
+        tokens: Option<i64>,
+        result: Result<String, String>,
+    ) -> bool {
+        match self
+            .calls
+            .iter_mut()
+            .rev()
+            .find(|cell| cell.call_id() == call_id)
+        {
+            Some(cell) => {
+                cell.complete(duration, tokens, result);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn mark_failed(&mut self) {
+        for cell in self.calls.iter_mut() {
+            if cell.result.is_none() {
+                cell.mark_failed();
+            }
+        }
+    }
+}
+
+impl HistoryCell for SubAgentToolCallGroupCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        for (idx, cell) in self.calls.iter().enumerate() {
+            if idx != 0 {
+                out.push(Line::from(""));
+            }
+            out.extend(cell.display_lines(width));
+        }
+        out
+    }
+}
+
 pub(crate) fn new_active_mcp_tool_call(
     call_id: String,
     invocation: McpInvocation,
     animations_enabled: bool,
 ) -> McpToolCallCell {
     McpToolCallCell::new(call_id, invocation, animations_enabled)
+}
+
+pub(crate) fn new_active_subagent_tool_call_group(
+    call_id: String,
+    invocation: SubAgentInvocation,
+) -> SubAgentToolCallGroupCell {
+    let mut group = SubAgentToolCallGroupCell::new();
+    group.push_begin(call_id, invocation);
+    group
 }
 
 pub(crate) fn new_web_search_call(query: String) -> PrefixedWrappedHistoryCell {
@@ -1553,6 +1965,58 @@ impl HistoryCell for FinalMessageSeparator {
     }
 }
 
+fn subagent_summary(invocation: &SubAgentInvocation) -> String {
+    let description = invocation.description.trim();
+    if !description.is_empty() {
+        return truncate_text(description, 64);
+    }
+
+    if invocation.label != "subagent" {
+        return invocation.label.clone();
+    }
+
+    let first_line = invocation.prompt.lines().next().unwrap_or_default().trim();
+    if first_line.is_empty() {
+        return "subagent".to_string();
+    }
+
+    truncate_text(first_line, 64)
+}
+
+fn fmt_subagent_duration(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs_f64();
+    if secs < 60.0 {
+        return format!("{secs:.1}s");
+    }
+
+    let whole_secs = elapsed.as_secs();
+    let minutes = whole_secs / 60;
+    let seconds = whole_secs % 60;
+    format!("{minutes}m {seconds:02}s")
+}
+
+fn fmt_subagent_tokens(tokens: i64) -> Option<String> {
+    if tokens <= 0 {
+        return None;
+    }
+
+    let tokens_f = tokens as f64;
+    if tokens < 1_000 {
+        return Some(format!("{tokens}"));
+    }
+    if tokens < 100_000 {
+        return Some(format!("{:.1}k", tokens_f / 1_000.0));
+    }
+    if tokens < 1_000_000 {
+        return Some(format!("{}k", tokens / 1_000));
+    }
+    if tokens < 100_000_000 {
+        return Some(format!("{:.1}M", tokens_f / 1_000_000.0));
+    }
+
+    Some(format!("{}M", tokens / 1_000_000))
+}
+
 fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     let args_str = invocation
         .arguments
@@ -1581,11 +2045,10 @@ mod tests {
     use crate::exec_cell::ExecCall;
     use crate::exec_cell::ExecCell;
     use codex_core::config::Config;
-    use codex_core::config::ConfigOverrides;
-    use codex_core::config::ConfigToml;
+    use codex_core::config::ConfigBuilder;
     use codex_core::config::types::McpServerConfig;
     use codex_core::config::types::McpServerTransportConfig;
-    use codex_core::openai_models::models_manager::ModelsManager;
+    use codex_core::models_manager::manager::ModelsManager;
     use codex_core::protocol::McpAuthStatus;
     use codex_protocol::parse_command::ParsedCommand;
     use dirs::home_dir;
@@ -1599,14 +2062,13 @@ mod tests {
     use mcp_types::TextContent;
     use mcp_types::Tool;
     use mcp_types::ToolInputSchema;
-
-    fn test_config() -> Config {
-        Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
-            ConfigOverrides::default(),
-            std::env::temp_dir(),
-        )
-        .expect("config")
+    async fn test_config() -> Config {
+        let codex_home = std::env::temp_dir();
+        ConfigBuilder::default()
+            .codex_home(codex_home.clone())
+            .build()
+            .await
+            .expect("config")
     }
 
     fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
@@ -1623,6 +2085,16 @@ mod tests {
 
     fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
         render_lines(&cell.transcript_lines(u16::MAX))
+    }
+
+    #[test]
+    fn subagent_summary_prefers_description() {
+        let invocation = SubAgentInvocation {
+            description: "Summarize the auth flow".to_string(),
+            label: "alpha".to_string(),
+            prompt: "Prompt".to_string(),
+        };
+        assert_eq!(subagent_summary(&invocation), "Summarize the auth flow");
     }
 
     #[test]
@@ -1651,8 +2123,49 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tools_output_masks_sensitive_values() {
-        let mut config = test_config();
+    fn unified_exec_wait_cell_renders_wait() {
+        let cell = new_unified_exec_wait_live(None, false);
+        let lines = render_transcript(&cell);
+        assert_eq!(lines, vec!["• Waiting for background terminal"],);
+    }
+
+    #[test]
+    fn ps_output_empty_snapshot() {
+        let cell = new_unified_exec_sessions_output(Vec::new());
+        let rendered = render_lines(&cell.display_lines(60)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_multiline_snapshot() {
+        let cell = new_unified_exec_sessions_output(vec![
+            "echo hello\nand then some extra text".to_string(),
+            "rg \"foo\" src".to_string(),
+        ]);
+        let rendered = render_lines(&cell.display_lines(40)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_long_command_snapshot() {
+        let cell = new_unified_exec_sessions_output(vec![String::from(
+            "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
+        )]);
+        let rendered = render_lines(&cell.display_lines(36)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_many_sessions_snapshot() {
+        let cell =
+            new_unified_exec_sessions_output((0..20).map(|idx| format!("command {idx}")).collect());
+        let rendered = render_lines(&cell.display_lines(32)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_output_masks_sensitive_values() {
+        let mut config = test_config().await;
         let mut env = HashMap::new();
         env.insert("TOKEN".to_string(), "secret".to_string());
         let stdio_config = McpServerConfig {
@@ -2483,9 +2996,9 @@ mod tests {
         assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
     }
 
-    #[test]
-    fn reasoning_summary_block_respects_config_overrides() {
-        let mut config = test_config();
+    #[tokio::test]
+    async fn reasoning_summary_block_respects_config_overrides() {
+        let mut config = test_config().await;
         config.model = Some("gpt-3.5-turbo".to_string());
         config.model_supports_reasoning_summaries = Some(true);
         config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);

@@ -11,13 +11,72 @@ edited between the markers.
 
 ### Highlights
 
-- Skip macOS rust-ci jobs on pull requests to avoid flaky PR runs.
-- Skip upstream npm package staging in CI for forks.
-- Fix sdk workflow to build the codexel binary.
+- _No fork-only changes yet._
 
 ### Details
 
-<!-- BEGIN GENERATED DETAILS: range=79d019672838ccc532247588d31d2eda81fb42d8..HEAD -->
+<!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
+
+_No fork-only changes yet._
+
+<!-- END GENERATED DETAILS -->
+
+## [0.1.3] - 2025-12-20
+
+Upstream baseline: openai/codex@a6974087e5c04fc711af68f70fe93f7f5d2b0981
+Release commit: 44f8df17aa11051fcf3919a9c16fe3b9c3296d66
+
+### Highlights
+
+- Merge latest `upstream/main` into `v0.1.3`.
+- Fix subagent config constraint handling after upstream merge.
+- Add a read-only spawn_subagent tool for parallel exploration and research.
+- Show spawn_subagent tool calls in chat history, including live activity and token usage, and stop them on Esc.
+- Fix: keep `spawn_subagent` history entries updating even when other messages are inserted.
+- Plan Mode: persist approved plans under `.codexel/plan.md` (and hide `.codexel/` from built-in file tools).
+- Skip macOS rust-ci jobs on pull requests to avoid flaky PR runs.
+- Skip upstream npm package staging in CI for forks.
+- Fix sdk workflow to build the codexel binary.
+- Fix Codexel update checks for npm/bun installs and keep the default state directory isolated to `~/.codexel`.
+
+### Details
+
+<!-- BEGIN GENERATED DETAILS: range=79d019672838ccc532247588d31d2eda81fb42d8..44f8df17aa11051fcf3919a9c16fe3b9c3296d66 -->
+
+#### Fixes
+
+- Fix sdk workflow codexel build
+- Fix update checks and codex home isolation
+
+#### Documentation
+
+- docs: clarify Codexel fork positioning
+- docs: move What's different up and mention ask_user_question
+
+#### TUI
+
+- tui: show subagent tool calls in history
+- tui: keep subagent history updating
+- tui: keep subagent cell live during inserts
+
+#### Core
+
+- core: fix subagent config constraints
+
+#### Plan Mode
+
+- subagent: stream activity and match plan-variants UI
+- Persist approved plan and hide .codexel
+
+#### Branding & Packaging
+
+- chore: ignore .codexel
+- tests: keep codexel CLI suites green
+
+#### Chores
+
+- chore: update login flow and tui snapshots
+- chore: regenerate changelog
 
 #### Other
 
@@ -26,6 +85,18 @@ edited between the markers.
 - Skip macOS rust-ci jobs on PRs
 - Skip upstream npm staging in CI for forks
 - Format markdown and workflow files
+- Add spawn_subagent tool
+- Show spawn_subagent tool calls in history
+- subagent: stream token counts
+- release: bump workspace version to 0.1.3
+- changelog: cut 0.1.3
+- changelog: update unreleased
+- changelog: update
+- Require spawn_subagent description and refresh snapshots
+- changelog: fix 0.1.3 release ranges
+- Merge upstream/main into v0.1.3
+- changelog: filter upstream commits in generator
+- changelog: keep generators in sync
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.2] - 2025-12-19
@@ -42,13 +113,16 @@ Release commit: 79d019672838ccc532247588d31d2eda81fb42d8
 
 <!-- BEGIN GENERATED DETAILS: range=d02343f99e3260308b2355f26e382ae04b14d7e7..79d019672838ccc532247588d31d2eda81fb42d8 -->
 
+#### Fixes
+
+- Fix Codexel update actions
+
 #### Plan Mode
 
 - Deduplicate plan updates in history
 
 #### Branding & Packaging
 
-- Fix Codexel update actions
 - Add GitHub Release publishing for Codexel
 
 #### Other
@@ -75,20 +149,23 @@ Release commit: d02343f99e3260308b2355f26e382ae04b14d7e7
 
 <!-- BEGIN GENERATED DETAILS: range=3e57f558eff5b400292a6ad3c9df2721648aed6f..d02343f99e3260308b2355f26e382ae04b14d7e7 -->
 
+#### Fixes
+
+- Fix npm publish workflow yaml
+
 #### Documentation
 
-- Document changelog workflow in AGENTS
-- Remove interactive questions from AGENTS
+- docs: document changelog workflow in AGENTS
+- docs: remove interactive questions from AGENTS
 
 #### Branding & Packaging
 
-- Add Codexel changelog and generator
+- changelog: add Codexel changelog and generator
 - Prepare Codexel npm 0.1.1 release
 
 #### Other
 
 - Update changelog for 0.1.1
-- Fix npm publish workflow yaml
 - Skip macOS in npm publish workflow
 <!-- END GENERATED DETAILS -->
 
@@ -110,49 +187,49 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 
 #### Features
 
-- Add /plan mode with plan approval
+- feat: add /plan mode with plan approval
 
 #### Fixes
 
-- Drop disabled_reason from ask_user_question rows
+- fix(tui2): drop disabled_reason from ask_user_question rows
 
 #### Documentation
 
-- Document AskUserQuestion
-- Add Windows notes for just
-- Fix plan mode note apostrophe
+- docs: document AskUserQuestion
+- docs: add Windows notes for just
+- docs: fix plan mode note apostrophe
 
 #### TUI
 
-- Show plan-variant progress
-- Show plan subagent checklist
-- Auto-execute approved plans
-- Polish plan-variants progress
-- Fix /plan cursor position
-- Add review step for ask_user_question
-- Taller plan approval overlay and wrapped summary
-- Make Plan Mode placeholder generic
+- tui: show plan-variant progress
+- tui: show plan subagent checklist
+- tui: auto-execute approved plans
+- tui: polish plan-variants progress
+- tui: fix /plan cursor position
+- tui: add review step for ask_user_question
+- tui: taller plan approval overlay and wrapped summary
+- tui: make Plan Mode placeholder generic
 
 #### Core
 
-- Keep plan subagents aligned with session model
-- Make Plan Mode outputs junior-executable
-- Pin approved plan into developer instructions
-- Emit immediate plan progress on approval
+- core: keep plan subagents aligned with session model
+- core: make Plan Mode outputs junior-executable
+- core: pin approved plan into developer instructions
+- core: emit immediate plan progress on approval
 
 #### Plan Mode
 
-- Run variants in parallel with status
-- Show subagent thinking/writing status
-- Show per-variant token usage
-- Prevent nested plan variants and shrink prompts
-- Tighten prompts to avoid retry loops
+- plan: run variants in parallel with status
+- plan: show subagent thinking/writing status
+- plan: show per-variant token usage
+- plan: prevent nested plan variants and shrink prompts
+- plan: tighten prompts to avoid retry loops
 - Improve /plan detail and plan variants
 - Use ASCII ranges in plan prompts
 - Tidy plan mode prompt bullets
 - Improve plan approval UI and auto-execute after /plan
 - Add configurable plan model setting
-- Humanize exec activity + multiline goal
+- plan: humanize exec activity + multiline goal
 
 #### Branding & Packaging
 
@@ -162,8 +239,8 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 
 #### Chores
 
-- Fix build after rebasing onto upstream/main
-- Sync built-in prompts with upstream
+- chore: fix build after rebasing onto upstream/main
+- chore(core): sync built-in prompts with upstream
 
 #### Other
 

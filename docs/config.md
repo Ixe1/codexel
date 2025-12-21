@@ -25,11 +25,13 @@ Codex supports several mechanisms for setting config values:
     - Because quotes are interpreted by one's shell, `-c key="true"` will be correctly interpreted in TOML as `key = true` (a boolean) and not `key = "true"` (a string). If for some reason you needed the string `"true"`, you would need to use `-c key='"true"'` (note the two sets of quotes).
 - The `$CODEXEL_HOME/config.toml` configuration file where the `CODEXEL_HOME` environment value defaults to `~/.codexel`. (For compatibility, `CODEX_HOME` is also supported; when set, it overrides the default.)
 
+If you previously stored Codexel state under `~/.codex`, set `CODEX_HOME=~/.codex` to keep using the legacy directory.
+
 Both the `--config` flag and the `config.toml` file support the following options:
 
 ## Feature flags
 
-Optional and experimental capabilities are toggled via the `[features]` table in `$CODEXEL_HOME/config.toml` (or legacy `$CODEX_HOME/config.toml`). If you see a deprecation notice mentioning a legacy key (for example `experimental_use_exec_command_tool`), move the setting into `[features]` or pass `--enable <feature>`.
+Optional and experimental capabilities are toggled via the `[features]` table in `$CODEXEL_HOME/config.toml` (or `$CODEX_HOME/config.toml` when `CODEX_HOME` is set). If you see a deprecation notice mentioning a legacy key (for example `experimental_use_exec_command_tool`), move the setting into `[features]` or pass `--enable <feature>`.
 
 ```toml
 [features]
@@ -396,8 +398,8 @@ Codex spawns subprocesses (e.g. when executing a `local_shell` tool-call suggest
 [shell_environment_policy]
 # inherit can be "all" (default), "core", or "none"
 inherit = "core"
-# set to true to *skip* the filter for `"*KEY*"` and `"*TOKEN*"`
-ignore_default_excludes = false
+# set to true to *skip* the filter for `"*KEY*"`, `"*SECRET*"`, and `"*TOKEN*"`
+ignore_default_excludes = true
 # exclude patterns (case-insensitive globs)
 exclude = ["AWS_*", "AZURE_*"]
 # force-set / override values
@@ -409,7 +411,7 @@ include_only = ["PATH", "HOME"]
 | Field                     | Type                 | Default | Description                                                                                                                                     |
 | ------------------------- | -------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `inherit`                 | string               | `all`   | Starting template for the environment:<br>`all` (clone full parent env), `core` (`HOME`, `PATH`, `USER`, …), or `none` (start empty).           |
-| `ignore_default_excludes` | boolean              | `false` | When `false`, Codex removes any var whose **name** contains `KEY`, `SECRET`, or `TOKEN` (case-insensitive) before other rules run.              |
+| `ignore_default_excludes` | boolean              | `true`  | When `false`, Codex removes any var whose **name** contains `KEY`, `SECRET`, or `TOKEN` (case-insensitive) before other rules run.              |
 | `exclude`                 | array<string>        | `[]`    | Case-insensitive glob patterns to drop after the default filter.<br>Examples: `"AWS_*"`, `"AZURE_*"`.                                           |
 | `set`                     | table<string,string> | `{}`    | Explicit key/value overrides or additions – always win over inherited values.                                                                   |
 | `include_only`            | array<string>        | `[]`    | If non-empty, a whitelist of patterns; only variables that match _one_ pattern survive the final step. (Generally used with `inherit = "all"`.) |
@@ -835,7 +837,7 @@ Users can specify config values at multiple levels. Order of precedence is as fo
 
 ### history
 
-By default, Codexel records messages sent to the model in `$CODEXEL_HOME/history.jsonl` (or legacy `$CODEX_HOME/history.jsonl`). Note that on UNIX, the file permissions are set to `o600`, so it should only be readable and writable by the owner.
+By default, Codexel records messages sent to the model in `$CODEXEL_HOME/history.jsonl` (or `$CODEX_HOME/history.jsonl` when `CODEX_HOME` is set). Note that on UNIX, the file permissions are set to `o600`, so it should only be readable and writable by the owner.
 
 To disable this behavior, configure `[history]` as follows:
 
@@ -931,13 +933,13 @@ cli_auth_credentials_store = "keyring"
 
 Valid values:
 
-- `file` (default) – Store credentials in `auth.json` under `$CODEXEL_HOME` (or legacy `$CODEX_HOME`).
+- `file` (default) – Store credentials in `auth.json` under `$CODEXEL_HOME` (or `$CODEX_HOME` when `CODEX_HOME` is set).
 - `keyring` – Store credentials in the operating system keyring via the [`keyring` crate](https://crates.io/crates/keyring); the CLI reports an error if secure storage is unavailable. Backends by OS:
   - macOS: macOS Keychain
   - Windows: Windows Credential Manager
   - Linux: DBus‑based Secret Service, the kernel keyutils, or a combination
   - FreeBSD/OpenBSD: DBus‑based Secret Service
-- `auto` – Save credentials to the operating system keyring when available; otherwise, fall back to `auth.json` under `$CODEXEL_HOME` (or legacy `$CODEX_HOME`).
+- `auto` – Save credentials to the operating system keyring when available; otherwise, fall back to `auth.json` under `$CODEXEL_HOME` (or `$CODEX_HOME` when `CODEX_HOME` is set).
 
 ## Config reference
 

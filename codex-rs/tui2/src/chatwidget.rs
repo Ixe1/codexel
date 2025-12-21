@@ -4,16 +4,18 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
+use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
-use codex_core::openai_models::model_family::ModelFamily;
-use codex_core::openai_models::models_manager::ModelsManager;
+use codex_core::models_manager::manager::ModelsManager;
+use codex_core::models_manager::model_family::ModelFamily;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
@@ -52,6 +54,10 @@ use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::SkillsListEntry;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubAgentToolCallActivityEvent;
+use codex_core::protocol::SubAgentToolCallBeginEvent;
+use codex_core::protocol::SubAgentToolCallEndEvent;
+use codex_core::protocol::SubAgentToolCallTokensEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TerminalInteractionEvent;
 use codex_core::protocol::TokenUsage;
@@ -113,6 +119,7 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::SubAgentToolCallGroupCell;
 use crate::markdown::append_markdown;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
@@ -290,6 +297,7 @@ pub(crate) struct ChatWidget {
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane,
     active_cell: Option<Box<dyn HistoryCell>>,
+    active_subagent_group: Option<Arc<Mutex<SubAgentToolCallGroupCell>>>,
     config: Config,
     model_family: ModelFamily,
     auth_manager: Arc<AuthManager>,
@@ -1078,6 +1086,38 @@ impl ChatWidget {
         self.defer_or_handle(|q| q.push_mcp_end(ev), |s| s.handle_mcp_end_now(ev2));
     }
 
+    fn on_subagent_tool_call_begin(&mut self, ev: SubAgentToolCallBeginEvent) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_subagent_begin(ev),
+            |s| s.handle_subagent_begin_now(ev2),
+        );
+    }
+
+    fn on_subagent_tool_call_activity(&mut self, ev: SubAgentToolCallActivityEvent) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_subagent_activity(ev),
+            |s| s.handle_subagent_activity_now(ev2),
+        );
+    }
+
+    fn on_subagent_tool_call_tokens(&mut self, ev: SubAgentToolCallTokensEvent) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_subagent_tokens(ev),
+            |s| s.handle_subagent_tokens_now(ev2),
+        );
+    }
+
+    fn on_subagent_tool_call_end(&mut self, ev: SubAgentToolCallEndEvent) {
+        let ev2 = ev.clone();
+        self.defer_or_handle(
+            |q| q.push_subagent_end(ev),
+            |s| s.handle_subagent_end_now(ev2),
+        );
+    }
+
     fn on_web_search_begin(&mut self, _ev: WebSearchBeginEvent) {
         self.flush_answer_stream_with_separator();
     }
@@ -1595,6 +1635,114 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn handle_subagent_begin_now(&mut self, ev: SubAgentToolCallBeginEvent) {
+        self.flush_answer_stream_with_separator();
+        let SubAgentToolCallBeginEvent {
+            call_id,
+            invocation,
+        } = ev;
+        if let Some(group) = self.active_subagent_group.clone() {
+            let mut did_push = false;
+            {
+                let mut group = group
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !group.is_complete() && group.can_accept_begin() {
+                    group.push_begin(call_id.clone(), invocation.clone());
+                    did_push = true;
+                }
+            }
+            if did_push {
+                self.request_redraw();
+                return;
+            }
+        }
+
+        let group = Arc::new(Mutex::new(
+            history_cell::new_active_subagent_tool_call_group(call_id, invocation),
+        ));
+        self.active_subagent_group = Some(group.clone());
+        self.add_boxed_history(Box::new(history_cell::SharedHistoryCell::new(group)));
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_subagent_end_now(&mut self, ev: SubAgentToolCallEndEvent) {
+        self.flush_answer_stream_with_separator();
+
+        let SubAgentToolCallEndEvent {
+            call_id,
+            invocation,
+            duration,
+            tokens,
+            result,
+        } = ev;
+
+        if let Some(group) = self.active_subagent_group.clone() {
+            let contains = {
+                let group = group
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                group.contains_call_id(&call_id)
+            };
+            if contains {
+                let is_complete = {
+                    let mut group = group
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    group.complete_call(&call_id, duration, tokens, result);
+                    group.is_complete()
+                };
+                if is_complete {
+                    self.active_subagent_group = None;
+                }
+                self.request_redraw();
+                return;
+            }
+        }
+
+        let mut cell =
+            history_cell::new_active_subagent_tool_call_group(call_id.clone(), invocation);
+        cell.complete_call(&call_id, duration, tokens, result);
+        self.add_boxed_history(Box::new(cell));
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_subagent_activity_now(&mut self, ev: SubAgentToolCallActivityEvent) {
+        if let Some(group) = self.active_subagent_group.clone() {
+            let mut updated = false;
+            {
+                let mut group = group
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if group.contains_call_id(&ev.call_id) {
+                    group.set_activity(&ev.call_id, ev.activity);
+                    updated = true;
+                }
+            }
+            if updated {
+                self.request_redraw();
+            }
+        }
+    }
+
+    pub(crate) fn handle_subagent_tokens_now(&mut self, ev: SubAgentToolCallTokensEvent) {
+        if let Some(group) = self.active_subagent_group.clone() {
+            let mut updated = false;
+            {
+                let mut group = group
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if group.contains_call_id(&ev.call_id) {
+                    group.set_tokens(&ev.call_id, ev.tokens);
+                    updated = true;
+                }
+            }
+            if updated {
+                self.request_redraw();
+            }
+        }
+    }
+
     pub(crate) fn new(
         common: ChatWidgetInit,
         conversation_manager: Arc<ConversationManager>,
@@ -1634,6 +1782,7 @@ impl ChatWidget {
                 skills: None,
             }),
             active_cell: None,
+            active_subagent_group: None,
             config,
             model_family,
             auth_manager,
@@ -1717,6 +1866,7 @@ impl ChatWidget {
                 skills: None,
             }),
             active_cell: None,
+            active_subagent_group: None,
             config,
             model_family,
             auth_manager,
@@ -2227,6 +2377,10 @@ impl ChatWidget {
             EventMsg::ViewImageToolCall(ev) => self.on_view_image_tool_call(ev),
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
+            EventMsg::SubAgentToolCallBegin(ev) => self.on_subagent_tool_call_begin(ev),
+            EventMsg::SubAgentToolCallActivity(ev) => self.on_subagent_tool_call_activity(ev),
+            EventMsg::SubAgentToolCallTokens(ev) => self.on_subagent_tool_call_tokens(ev),
+            EventMsg::SubAgentToolCallEnd(ev) => self.on_subagent_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
@@ -2403,8 +2557,20 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
+            } else if let Some(tool) = cell
+                .as_any_mut()
+                .downcast_mut::<SubAgentToolCallGroupCell>()
+            {
+                tool.mark_failed();
             }
             self.add_boxed_history(cell);
+        }
+
+        if let Some(group) = self.active_subagent_group.take() {
+            let mut group = group
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            group.mark_failed();
         }
     }
 
@@ -3099,12 +3265,12 @@ impl ChatWidget {
     /// Open a popup to choose the approvals mode (ask for approval policy + sandbox policy).
     pub(crate) fn open_approvals_popup(&mut self) {
         let current_approval = self.config.approval_policy.value();
-        let current_sandbox = self.config.sandbox_policy.clone();
+        let current_sandbox = self.config.sandbox_policy.get();
         let mut items: Vec<SelectionItem> = Vec::new();
         let presets: Vec<ApprovalPreset> = builtin_approval_presets();
         for preset in presets.into_iter() {
             let is_current =
-                Self::preset_matches_current(current_approval, &current_sandbox, &preset);
+                Self::preset_matches_current(current_approval, current_sandbox, &preset);
             let name = preset.label.to_string();
             let description_text = preset.description;
             let description = Some(description_text.to_string());
@@ -3232,7 +3398,7 @@ impl ChatWidget {
             self.config.codex_home.as_path(),
             cwd.as_path(),
             &env_map,
-            &self.config.sandbox_policy,
+            self.config.sandbox_policy.get(),
             Some(self.config.codex_home.as_path()),
         ) {
             Ok(_) => None,
@@ -3331,7 +3497,7 @@ impl ChatWidget {
         let mode_label = preset
             .as_ref()
             .map(|p| describe_policy(&p.sandbox))
-            .unwrap_or_else(|| describe_policy(&self.config.sandbox_policy));
+            .unwrap_or_else(|| describe_policy(self.config.sandbox_policy.get()));
         let info_line = if failed_scan {
             Line::from(vec![
                 "We couldn't complete the world-writable scan, so protections cannot be verified. "
@@ -3504,17 +3670,19 @@ impl ChatWidget {
     }
 
     /// Set the sandbox policy in the widget's config copy.
-    pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) {
+    pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) -> ConstraintResult<()> {
         #[cfg(target_os = "windows")]
-        let should_clear_downgrade = !matches!(policy, SandboxPolicy::ReadOnly)
+        let should_clear_downgrade = !matches!(&policy, SandboxPolicy::ReadOnly)
             || codex_core::get_platform_sandbox().is_some();
 
-        self.config.sandbox_policy = policy;
+        self.config.sandbox_policy.set(policy)?;
 
         #[cfg(target_os = "windows")]
         if should_clear_downgrade {
             self.config.forced_auto_mode_downgraded_on_windows = false;
         }
+
+        Ok(())
     }
 
     pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {
@@ -4096,6 +4264,7 @@ fn skills_for_cwd(cwd: &Path, skills_entries: &[SkillsListEntry]) -> Vec<SkillMe
                 .map(|skill| SkillMetadata {
                     name: skill.name.clone(),
                     description: skill.description.clone(),
+                    short_description: skill.short_description.clone(),
                     path: skill.path.clone(),
                     scope: skill.scope,
                 })

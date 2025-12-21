@@ -124,6 +124,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "ask_user_question",
         "approve_plan",
         "propose_plan_variants",
+        "spawn_subagent",
         "apply_patch",
         "view_image",
     ];
@@ -612,7 +613,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
 
     let default_cwd = config.cwd.clone();
     let default_approval_policy = config.approval_policy.value();
-    let default_sandbox_policy = config.sandbox_policy.clone();
+    let default_sandbox_policy = config.sandbox_policy.get();
     let default_model = session_configured.model;
     let default_effort = config.model_reasoning_effort;
     let default_summary = config.model_reasoning_summary;
@@ -702,7 +703,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
 
     let default_cwd = config.cwd.clone();
     let default_approval_policy = config.approval_policy.value();
-    let default_sandbox_policy = config.sandbox_policy.clone();
+    let default_sandbox_policy = config.sandbox_policy.get();
     let default_model = session_configured.model;
     let default_effort = config.model_reasoning_effort;
     let default_summary = config.model_reasoning_summary;

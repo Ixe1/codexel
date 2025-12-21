@@ -311,6 +311,24 @@ pub enum AskForApproval {
     Never,
 }
 
+/// Represents whether outbound network access is available to the agent.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, Default, JsonSchema, TS,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum NetworkAccess {
+    #[default]
+    Restricted,
+    Enabled,
+}
+
+impl NetworkAccess {
+    pub fn is_enabled(self) -> bool {
+        matches!(self, NetworkAccess::Enabled)
+    }
+}
+
 /// Determines execution restrictions for model shell commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema, TS)]
 #[strum(serialize_all = "kebab-case")]
@@ -323,6 +341,15 @@ pub enum SandboxPolicy {
     /// Read-only access to the entire file-system.
     #[serde(rename = "read-only")]
     ReadOnly,
+
+    /// Indicates the process is already in an external sandbox. Allows full
+    /// disk access while honoring the provided network setting.
+    #[serde(rename = "external-sandbox")]
+    ExternalSandbox {
+        /// Whether the external sandbox permits outbound network traffic.
+        #[serde(default)]
+        network_access: NetworkAccess,
+    },
 
     /// Same as `ReadOnly` but additionally grants write access to the current
     /// working directory ("workspace").
@@ -416,6 +443,7 @@ impl SandboxPolicy {
     pub fn has_full_disk_write_access(&self) -> bool {
         match self {
             SandboxPolicy::DangerFullAccess => true,
+            SandboxPolicy::ExternalSandbox { .. } => true,
             SandboxPolicy::ReadOnly => false,
             SandboxPolicy::WorkspaceWrite { .. } => false,
         }
@@ -424,6 +452,7 @@ impl SandboxPolicy {
     pub fn has_full_network_access(&self) -> bool {
         match self {
             SandboxPolicy::DangerFullAccess => true,
+            SandboxPolicy::ExternalSandbox { network_access } => network_access.is_enabled(),
             SandboxPolicy::ReadOnly => false,
             SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
         }
@@ -435,6 +464,7 @@ impl SandboxPolicy {
     pub fn get_writable_roots_with_cwd(&self, cwd: &Path) -> Vec<WritableRoot> {
         match self {
             SandboxPolicy::DangerFullAccess => Vec::new(),
+            SandboxPolicy::ExternalSandbox { .. } => Vec::new(),
             SandboxPolicy::ReadOnly => Vec::new(),
             SandboxPolicy::WorkspaceWrite {
                 writable_roots,
@@ -596,6 +626,16 @@ pub enum EventMsg {
     McpToolCallBegin(McpToolCallBeginEvent),
 
     McpToolCallEnd(McpToolCallEndEvent),
+
+    SubAgentToolCallBegin(SubAgentToolCallBeginEvent),
+
+    /// Live activity updates for an in-progress `spawn_subagent` tool call.
+    SubAgentToolCallActivity(SubAgentToolCallActivityEvent),
+
+    /// Live token updates for an in-progress `spawn_subagent` tool call.
+    SubAgentToolCallTokens(SubAgentToolCallTokensEvent),
+
+    SubAgentToolCallEnd(SubAgentToolCallEndEvent),
 
     WebSearchBegin(WebSearchBeginEvent),
 
@@ -1134,10 +1174,44 @@ pub struct McpInvocation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct SubAgentInvocation {
+    /// Human-friendly, one-sentence description shown in history UIs.
+    #[serde(default)]
+    pub description: String,
+    /// Subagent label (sanitized).
+    pub label: String,
+    /// Prompt sent to the subagent.
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
 pub struct McpToolCallBeginEvent {
     /// Identifier so this can be paired with the McpToolCallEnd event.
     pub call_id: String,
     pub invocation: McpInvocation,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct SubAgentToolCallBeginEvent {
+    /// Identifier so this can be paired with the SubAgentToolCallEnd event.
+    pub call_id: String,
+    pub invocation: SubAgentInvocation,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct SubAgentToolCallActivityEvent {
+    /// Identifier for the corresponding SubAgentToolCallBegin that is in progress.
+    pub call_id: String,
+    /// Human-friendly activity description (empty string clears the current activity).
+    pub activity: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct SubAgentToolCallTokensEvent {
+    /// Identifier for the corresponding SubAgentToolCallBegin that is in progress.
+    pub call_id: String,
+    /// Cumulative tokens consumed so far by the subagent run.
+    pub tokens: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
@@ -1158,6 +1232,21 @@ impl McpToolCallEndEvent {
             Err(_) => false,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct SubAgentToolCallEndEvent {
+    /// Identifier for the corresponding SubAgentToolCallBegin that finished.
+    pub call_id: String,
+    pub invocation: SubAgentInvocation,
+    #[ts(type = "string")]
+    pub duration: Duration,
+    /// Total tokens consumed by the subagent run, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tokens: Option<i64>,
+    /// Result of the subagent call. Note this could be an error.
+    pub result: Result<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1741,12 +1830,16 @@ pub enum SkillScope {
     User,
     Repo,
     System,
+    Admin,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_description: Option<String>,
     pub path: PathBuf,
     pub scope: SkillScope,
 }
@@ -1876,6 +1969,21 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn external_sandbox_reports_full_access_flags() {
+        let restricted = SandboxPolicy::ExternalSandbox {
+            network_access: NetworkAccess::Restricted,
+        };
+        assert!(restricted.has_full_disk_write_access());
+        assert!(!restricted.has_full_network_access());
+
+        let enabled = SandboxPolicy::ExternalSandbox {
+            network_access: NetworkAccess::Enabled,
+        };
+        assert!(enabled.has_full_disk_write_access());
+        assert!(enabled.has_full_network_access());
+    }
 
     #[test]
     fn item_started_event_from_web_search_emits_begin_event() {
