@@ -24,11 +24,16 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 pub(crate) const ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS: &str = r#"## AskUserQuestion
-Use `ask_user_question` when you need user input to proceed during execution. This helps you:
+Use `ask_user_question` whenever you need user input to proceed during execution. This helps you:
 1. Gather preferences or requirements (e.g., scope, trade-offs).
 2. Clarify ambiguous instructions.
 3. Get a decision on implementation choices as you work.
 4. Offer a small set of clear options when multiple directions are reasonable.
+
+Decision rule:
+- If you're about to ask the user a question (e.g., "should I...?", "which one...?", "can you...?"), do not ask it in plain text. Call `ask_user_question` and wait for the tool result.
+- If there are multiple reasonable interpretations or choices that would materially change the output, side effects, or time/cost, pause and ask via this tool instead of guessing.
+- If the user explicitly delegates (e.g., "use your best judgment") or a safe default is clearly implied, proceed and state your assumption.
 
 Usage notes:
 - Do not ask questions in plain text; call `ask_user_question` and wait for the tool result.
@@ -37,6 +42,12 @@ Usage notes:
 - Use `multiSelect: true` only when multiple answers are allowed.
 - If you recommend an option, make it the first option and add "(Recommended)" to the label.
 - Do not include numbering in option labels (e.g. "1:", "2.", "A)"); the UI provides numbering.
+
+Tool constraints:
+- 1-4 questions per call.
+- Each question: `header` max 12 chars; `question` must end with a '?'.
+- Each question must include 2-4 `options`; do not include an "Other" option (the UI provides it automatically).
+- Each option: `label` is 1-5 words; include a `description` with trade-offs.
 
 Example:
 Call `ask_user_question` with a single question and a few options, then wait for the answer and proceed.
@@ -446,7 +457,7 @@ fn create_ask_user_question_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: ASK_USER_QUESTION_TOOL_NAME.to_string(),
-        description: "Ask the user 1-4 multiple-choice questions during execution to clarify requirements. Do not ask these questions in plain text; call this tool to pause and wait. The UI always provides an 'Other' choice for custom text input."
+        description: "Ask the user 1-4 multiple-choice questions during execution to clarify requirements. Use this tool whenever you'd otherwise ask the user a question. Do not ask these questions in plain text; call this tool to pause and wait. The UI always provides an 'Other' choice for custom text input."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -1595,6 +1606,31 @@ mod tests {
             features,
             session_source: &session_source,
         })
+    }
+
+    #[test]
+    fn test_ask_user_question_developer_instructions_regression() {
+        let instructions = ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS;
+        assert!(
+            instructions.contains("Do not ask questions in plain text"),
+            "expected the plain-text prohibition to be present"
+        );
+        assert!(
+            instructions.contains("If you're about to ask the user a question"),
+            "expected the decision rule to be present"
+        );
+        assert!(
+            instructions.contains("1-4 questions per call"),
+            "expected the question-count constraint to be present"
+        );
+        assert!(
+            instructions.contains("2-4 `options`"),
+            "expected the option-count constraint to be present"
+        );
+        assert!(
+            instructions.contains("must end with a '?'"),
+            "expected the question punctuation constraint to be present"
+        );
     }
 
     #[test]
