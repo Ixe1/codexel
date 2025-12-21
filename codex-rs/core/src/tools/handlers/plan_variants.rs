@@ -43,10 +43,12 @@ Hard rules:
 - You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
 - Output ONLY valid JSON matching this shape:
   { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
+  Do not wrap the JSON in markdown code fences.
 
 Quality bar:
-- Prefer 8-16 steps that are checkable and ordered.
-- `plan.explanation` MUST be a practical runbook with clear section headings. Include ALL of:
+- Scale the number of steps to the task. Avoid filler (small: 4-8; typical: 8-12; complex: 12-16).
+- In `summary`, state when to choose this variant and the biggest trade-off.
+- `plan.explanation` MUST be a practical runbook with clear section headings. Keep it concise and focus on what makes this variant distinct. Include ALL of:
   - Assumptions
   - Scope (in-scope + non-goals)
   - Touchpoints (files/modules/components to change, with what/why)
@@ -54,6 +56,7 @@ Quality bar:
   - Risks (failure modes + mitigations + rollback)
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
+  - Open questions (optional; write "None." if none)
 - Make this variant meaningfully different from other plausible variants (trade-offs, sequencing, scope, risk posture).
 "#;
 
@@ -85,13 +88,13 @@ fn variant_title(idx: usize, total: usize) -> String {
 fn plan_variant_focus(idx: usize) -> &'static str {
     match idx {
         1 => {
-            "Variant 1 (Minimal): minimal-risk, minimal-diff path (pragmatic, incremental; avoid refactors). Title MUST be \"Minimal\"."
+            "Variant 1 (Minimal): minimal-risk, minimal-diff path (pragmatic, incremental; avoid refactors)."
         }
         2 => {
-            "Variant 2 (Correctness): correctness-first path (tests, invariants, edge cases, careful validation/rollback). Title MUST be \"Correctness\"."
+            "Variant 2 (Correctness): correctness-first path (tests, invariants, edge cases, careful validation/rollback)."
         }
         3 => {
-            "Variant 3 (DX): architecture/DX-first path (refactors that pay down tech debt, clearer abstractions, better ergonomics). Title MUST be \"DX\"."
+            "Variant 3 (DX): architecture/DX-first path (refactors that pay down tech debt, clearer abstractions, better ergonomics)."
         }
         _ => "Use a distinct angle and trade-offs.",
     }
@@ -167,7 +170,7 @@ impl ToolHandler for PlanVariantsHandler {
                 session
                     .notify_background_event(
                         turn.as_ref(),
-                        format!("Plan variants: generating {idx}/{TOTAL}…"),
+                        format!("Plan variants: generating {idx}/{TOTAL}"),
                     )
                     .await;
 

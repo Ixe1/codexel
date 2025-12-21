@@ -43,7 +43,8 @@ You are planning only. Do not call `apply_patch` or execute mutating commands.
 
 Output quality bar:
 - The plan must be actionable by another engineer without extra back-and-forth.
-- Prefer 8-16 steps. Each step should describe a concrete deliverable and, when helpful, name key files/components to touch.
+- Scale the number of steps to the task. Avoid filler (small: 4-8; typical: 8-12; complex: 12-16).
+- Each step should describe a concrete deliverable and, when helpful, name key files/components to touch.
 - Put detailed substeps, rationale, trade-offs, risks, and validation commands in `plan.explanation` (multi-paragraph is fine).
 - `plan.explanation` MUST be a practical runbook. Use clear section headings. Include ALL of:
   - Assumptions
@@ -53,6 +54,7 @@ Output quality bar:
   - Risks (failure modes + mitigations + rollback)
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
+  - Open questions (optional; write "None." if none)
 
 Mini-example (illustrative; do not copy verbatim):
 - Step: "Add `--dry-run` flag to CLI"
@@ -76,19 +78,20 @@ Goal: produce a clear, actionable implementation plan for the user's request wit
 Rules:
 - You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
 - Do not attempt to edit files or run mutating commands (no installs, no git writes, no redirects/heredocs that write files).
-- You may ask clarifying questions via AskUserQuestion when requirements are ambiguous or missing.
+- You may ask clarifying questions via AskUserQuestion only if the plan would be irresponsible without the answer. Batch questions and avoid prolonged back-and-forth.
 - Do not call `spawn_subagent` in plan mode (it is not available from this session type).
 - Use `propose_plan_variants` to generate 3 alternative plans as input (at most once per plan draft). If it fails, proceed without it.
 - When you have a final plan, call `approve_plan` with:
   - Title: short and specific.
   - Summary: 2-4 sentences with key approach + scope boundaries.
   - Steps: concise, ordered, and checkable.
-  - Explanation: use the required section headings (Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation) and make it a junior-executable runbook.
+  - Explanation: use the required section headings (Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation; Open questions) and make it a junior-executable runbook. For headings that don't apply, write "None.".
 - If the user requests revisions, incorporate feedback and propose a revised plan (you may call `propose_plan_variants` again only if the plan materially changes or the user asks for alternatives).
 - If the user rejects, stop.
 
 When the plan is approved, your final assistant message MUST be ONLY valid JSON matching:
 { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
+Do not wrap the JSON in markdown code fences.
 "#;
 
 fn build_plan_mode_developer_instructions(existing: &str, ask: &str) -> String {
