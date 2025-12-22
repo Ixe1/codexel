@@ -91,6 +91,23 @@ Example (parallel):
 `spawn_subagent({ "description": "Trace token usage in requests", "prompt": "Find where tokens are attached to outbound requests. Return files + key call sites.", "label": "auth_use" })`
 "#;
 
+pub(crate) const WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS: &str = r#"## Web UI Quality Bar (only when building/changing web UI)
+When the user's request involves a web UI, raise the quality bar beyond "it works".
+
+Principles:
+- Prioritize usability and clarity: clear hierarchy, predictable behavior, good defaults, minimal surprise.
+- Prefer a small design system over ad-hoc styles: define tokens (CSS variables) for color, spacing, radius, shadow, typography; reuse them consistently.
+- Make states first-class: loading, empty, error, disabled, slow network, long text, and small screens should look intentional.
+- Accessibility is required: semantic HTML, keyboard navigation, visible focus, sufficient contrast, sensible ARIA only when needed.
+- Responsive by default: mobile-first layout that scales up; avoid hard-coded widths and fragile pixel-perfect positioning.
+- Polish with restraint: subtle transitions, hover/pressed feedback, and micro-interactions only when they reduce confusion.
+
+Deliverables to include in the plan/output:
+- "UX goals" paragraph (what should feel better, not just what changes).
+- A short "Design system" section (tokens + reusable components; avoid one-off styling).
+- Verification: exact manual steps (mouse + keyboard) and any automated checks/tests (e.g. unit/e2e/lint).
+"#;
+
 pub(crate) fn prepend_ask_user_question_developer_instructions(
     developer_instructions: Option<String>,
 ) -> Option<String> {
@@ -105,6 +122,24 @@ pub(crate) fn prepend_ask_user_question_developer_instructions(
             "{ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS}\n{existing}"
         )),
         None => Some(ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
+pub(crate) fn prepend_web_ui_quality_bar_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && (existing.contains("## Web UI Quality Bar")
+            || existing.contains("Web UI Quality Bar (only when building/changing web UI)"))
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS.to_string()),
     }
 }
 

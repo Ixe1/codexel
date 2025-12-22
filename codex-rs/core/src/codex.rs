@@ -552,8 +552,12 @@ impl Session {
             developer_instructions: match session_configuration.session_source {
                 SessionSource::Cli | SessionSource::VSCode => {
                     let developer_instructions =
-                        crate::tools::spec::prepend_ask_user_question_developer_instructions(
+                        crate::tools::spec::prepend_web_ui_quality_bar_developer_instructions(
                             session_configuration.developer_instructions.clone(),
+                        );
+                    let developer_instructions =
+                        crate::tools::spec::prepend_ask_user_question_developer_instructions(
+                            developer_instructions,
                         );
                     crate::tools::spec::prepend_spawn_subagent_developer_instructions(
                         developer_instructions,

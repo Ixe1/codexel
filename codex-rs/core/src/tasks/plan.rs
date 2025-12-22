@@ -55,6 +55,12 @@ Output quality bar:
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
   - Open questions (optional; write "None." if none)
+  - If the task involves UI (web, mobile, TUI), add an explicit "UI quality bar" subsection under Approach or Acceptance criteria that covers:
+    - Visual/UX goals (what should feel better, not just what changes)
+    - Design system plan (tokens, spacing, typography, component reuse)
+    - Responsiveness (breakpoints, layout constraints) and accessibility (keyboard, contrast, screen readers where applicable)
+    - Interaction polish (loading/empty/error states, animations/micro-interactions only if appropriate)
+    - Verification: how to manually validate the UX (exact steps) plus any automated UI tests to run
 
 Mini-example (illustrative; do not copy verbatim):
 - Step: "Add `--dry-run` flag to CLI"
@@ -85,6 +91,7 @@ Rules:
   - Title: short and specific.
   - Summary: 2-4 sentences with key approach + scope boundaries.
   - Steps: concise, ordered, and checkable.
+  - Steps status: set every step status to `"pending"` (this is an approved plan, not execution progress).
   - Explanation: use the required section headings (Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation; Open questions) and make it a junior-executable runbook. For headings that don't apply, write "None.".
 - If the user requests revisions, incorporate feedback and propose a revised plan (you may call `propose_plan_variants` again only if the plan materially changes or the user asks for alternatives).
 - If the user rejects, stop.
