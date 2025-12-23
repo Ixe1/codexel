@@ -53,6 +53,16 @@ Example:
 Call `ask_user_question` with a single question and a few options, then wait for the answer and proceed.
 "#;
 
+pub(crate) const CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS: &str = r#"## Clarification Policy
+When a request is underspecified, avoid guessing. Ask clarifying questions before producing a plan or taking actions that depend on missing details.
+
+Rules:
+- If there are multiple reasonable interpretations that would materially change the outcome (scope, approach, output, trade-offs, time/cost, risk), pause and ask questions instead of assuming.
+- Ask as many questions as needed to remove material ambiguity. `ask_user_question` supports 1-4 questions per call; if more are needed, ask another set.
+- Prefer multiple-choice options with clear trade-offs, and keep a free-text escape hatch (the UI provides an "Other" option automatically).
+- If the user explicitly delegates (e.g., "use your best judgment" / "surprise me"), proceed and state the assumptions you chose, plus the main knobs the user can tweak.
+"#;
+
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
 Use `spawn_subagent` to delegate short, read-only research tasks. Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
 
@@ -122,6 +132,23 @@ pub(crate) fn prepend_ask_user_question_developer_instructions(
             "{ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS}\n{existing}"
         )),
         None => Some(ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
+pub(crate) fn prepend_clarification_policy_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## Clarification Policy")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS.to_string()),
     }
 }
 
@@ -1665,6 +1692,23 @@ mod tests {
         assert!(
             instructions.contains("must end with a '?'"),
             "expected the question punctuation constraint to be present"
+        );
+    }
+
+    #[test]
+    fn test_clarification_policy_developer_instructions_regression() {
+        let instructions = CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS;
+        assert!(
+            instructions.contains("If there are multiple reasonable interpretations"),
+            "expected the ambiguity decision rule to be present"
+        );
+        assert!(
+            instructions.contains("1-4 questions per call"),
+            "expected the ask_user_question per-call limit to be present"
+        );
+        assert!(
+            instructions.contains("use your best judgment"),
+            "expected the explicit delegation escape hatch to be present"
         );
     }
 

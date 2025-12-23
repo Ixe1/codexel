@@ -51,6 +51,7 @@ Output quality bar:
   - Scope (in-scope + non-goals)
   - Touchpoints (files/modules/components to change, with what/why)
   - Approach (sequence notes; include a short "discovery checklist" of 2-6 read-only commands/files if the task is ambiguous)
+  - Optional: Web search (only if available; keep it minimal and tolerate failures)
   - Risks (failure modes + mitigations + rollback)
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
@@ -83,8 +84,9 @@ Goal: produce a clear, actionable implementation plan for the user's request wit
 
 Rules:
 - You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Do not attempt to edit files or run mutating commands (no installs, no git writes, no redirects/heredocs that write files).
-- You may ask clarifying questions via AskUserQuestion only if the plan would be irresponsible without the answer. Batch questions and avoid prolonged back-and-forth.
+- When the goal is ambiguous in a way that would change the plan materially, ask clarifying questions via AskUserQuestion instead of guessing. Batch questions and avoid prolonged back-and-forth.
 - Do not call `spawn_subagent` in plan mode (it is not available from this session type).
 - Use `propose_plan_variants` to generate 3 alternative plans as input (at most once per plan draft). If it fails, proceed without it.
 - When you have a final plan, call `approve_plan` with:
@@ -100,6 +102,12 @@ When the plan is approved, your final assistant message MUST be ONLY valid JSON 
 { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
 Do not wrap the JSON in markdown code fences.
 "#;
+
+pub(crate) fn constrain_features_for_planning(features: &mut crate::features::Features) {
+    features
+        .disable(crate::features::Feature::ApplyPatchFreeform)
+        .disable(crate::features::Feature::ViewImageTool);
+}
 
 fn build_plan_mode_developer_instructions(existing: &str, ask: &str) -> String {
     let mut developer_instructions = String::new();
@@ -189,16 +197,14 @@ async fn start_plan_conversation(
         .developer_instructions
         .clone()
         .unwrap_or_default();
-    sub_agent_config.developer_instructions = Some(build_plan_mode_developer_instructions(
-        existing.as_str(),
-        ask.as_str(),
-    ));
+    let developer_instructions =
+        build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
+    sub_agent_config.developer_instructions =
+        crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(
+            developer_instructions,
+        ));
 
-    sub_agent_config
-        .features
-        .disable(crate::features::Feature::ApplyPatchFreeform)
-        .disable(crate::features::Feature::WebSearchRequest)
-        .disable(crate::features::Feature::ViewImageTool);
+    constrain_features_for_planning(&mut sub_agent_config.features);
 
     sub_agent_config.approval_policy =
         crate::config::Constrained::allow_any(codex_protocol::protocol::AskForApproval::Never);
@@ -362,9 +368,10 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 use assert_cmd::cargo::cargo_bin;
-                let mut overrides = crate::config::ConfigOverrides::default();
-                overrides.codex_linux_sandbox_exe = Some(cargo_bin("codex-linux-sandbox"));
-                overrides
+                crate::config::ConfigOverrides {
+                    codex_linux_sandbox_exe: Some(cargo_bin("codex-linux-sandbox")),
+                    ..Default::default()
+                }
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -386,17 +393,25 @@ mod tests {
         let existing_base = cfg.base_instructions.clone();
 
         let existing = cfg.developer_instructions.clone().unwrap_or_default();
-        cfg.developer_instructions = Some(build_plan_mode_developer_instructions(
-            existing.as_str(),
-            ask.as_str(),
-        ));
+        let developer_instructions =
+            build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
+        cfg.developer_instructions =
+            crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(
+                developer_instructions,
+            ));
 
         assert_eq!(cfg.base_instructions, existing_base);
         assert!(
             cfg.developer_instructions
                 .as_deref()
                 .unwrap_or_default()
-                .starts_with("## Plan Mode")
+                .contains("## Plan Mode")
+        );
+        assert!(
+            cfg.developer_instructions
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Clarification Policy")
         );
         assert!(
             cfg.developer_instructions
@@ -428,6 +443,21 @@ mod tests {
         assert!(PLAN_MODE_DEVELOPER_PREFIX.contains(
             "Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation"
         ));
+    }
+
+    #[test]
+    fn planning_constraints_keep_web_search_if_enabled() {
+        let mut features = crate::features::Features::with_defaults();
+        features
+            .enable(crate::features::Feature::ApplyPatchFreeform)
+            .enable(crate::features::Feature::ViewImageTool)
+            .enable(crate::features::Feature::WebSearchRequest);
+
+        constrain_features_for_planning(&mut features);
+
+        assert!(!features.enabled(crate::features::Feature::ApplyPatchFreeform));
+        assert!(!features.enabled(crate::features::Feature::ViewImageTool));
+        assert!(features.enabled(crate::features::Feature::WebSearchRequest));
     }
 
     #[tokio::test]

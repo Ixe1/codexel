@@ -559,6 +559,10 @@ impl Session {
                         crate::tools::spec::prepend_ask_user_question_developer_instructions(
                             developer_instructions,
                         );
+                    let developer_instructions =
+                        crate::tools::spec::prepend_clarification_policy_developer_instructions(
+                            developer_instructions,
+                        );
                     crate::tools::spec::prepend_spawn_subagent_developer_instructions(
                         developer_instructions,
                     )

@@ -16,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codex_delegate::run_codex_conversation_one_shot;
 use crate::config::Config;
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -41,6 +40,7 @@ Hard rules:
 - Do not propose or perform edits. Do not call apply_patch.
 - Do not call propose_plan_variants.
 - You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Output ONLY valid JSON matching this shape:
   { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
   Do not wrap the JSON in markdown code fences.
@@ -100,7 +100,29 @@ fn plan_variant_focus(idx: usize) -> &'static str {
     }
 }
 
+fn strip_clarification_policy(existing: &str) -> String {
+    const HEADER: &str = "## Clarification Policy";
+    let Some(start) = existing.find(HEADER) else {
+        return existing.to_string();
+    };
+
+    let after_header = &existing[start + HEADER.len()..];
+    let end_rel = after_header.find("\n## ").unwrap_or(after_header.len());
+    let end = start + HEADER.len() + end_rel;
+
+    let before = existing[..start].trim_end();
+    let after = existing[end..].trim_start();
+    if before.is_empty() {
+        return after.to_string();
+    }
+    if after.is_empty() {
+        return before.to_string();
+    }
+    format!("{before}\n{after}")
+}
+
 fn build_plan_variant_developer_instructions(idx: usize, total: usize, existing: &str) -> String {
+    let existing = strip_clarification_policy(existing);
     let existing = existing.trim();
     if existing.is_empty() {
         return format!(
@@ -362,10 +384,7 @@ async fn run_one_variant(
     cfg.model_reasoning_summary = parent_ctx.client.get_reasoning_summary();
 
     let mut features = cfg.features.clone();
-    features
-        .disable(Feature::ApplyPatchFreeform)
-        .disable(Feature::WebSearchRequest)
-        .disable(Feature::ViewImageTool);
+    crate::tasks::constrain_features_for_planning(&mut features);
     cfg.features = features;
     cfg.approval_policy =
         crate::config::Constrained::allow_any(codex_protocol::protocol::AskForApproval::Never);
@@ -524,6 +543,16 @@ mod tests {
     }
 
     #[test]
+    fn plan_variants_strip_clarification_policy_from_existing_instructions() {
+        let existing =
+            "## Clarification Policy\n- Ask questions\n\n## Something Else\nKeep this.\n";
+        let out = build_plan_variant_developer_instructions(1, 3, existing);
+        assert!(!out.contains("## Clarification Policy"));
+        assert!(out.contains("## Something Else"));
+        assert!(out.contains("Keep this."));
+    }
+
+    #[test]
     fn plan_variant_output_titles_are_normalized() {
         let ev = parse_plan_output_event(
             2,
@@ -540,9 +569,10 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 use assert_cmd::cargo::cargo_bin;
-                let mut overrides = crate::config::ConfigOverrides::default();
-                overrides.codex_linux_sandbox_exe = Some(cargo_bin("codex-linux-sandbox"));
-                overrides
+                crate::config::ConfigOverrides {
+                    codex_linux_sandbox_exe: Some(cargo_bin("codex-linux-sandbox")),
+                    ..Default::default()
+                }
             }
             #[cfg(not(target_os = "linux"))]
             {
