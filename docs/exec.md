@@ -14,6 +14,10 @@ Use `codexel exec --full-auto` to allow file edits. Use `codexel exec --sandbox 
 
 `codexel exec` is non-interactive. If the agent attempts to ask an interactive multiple-choice question (AskUserQuestion), the request is automatically cancelled. Plan approval prompts are automatically rejected.
 
+### Subagents are supported
+
+`codexel exec` can still use `spawn_subagent` for parallel, read-only repo research.
+
 ### Default output mode
 
 By default, Codexel streams its activity to stderr and only writes the final message from the agent to stdout. This makes it easier to pipe `codexel exec` into another tool without extra filtering.

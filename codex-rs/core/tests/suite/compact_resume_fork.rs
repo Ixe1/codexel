@@ -137,6 +137,30 @@ fn normalize_compact_prompts(requests: &mut [Value]) {
     }
 }
 
+fn prepend_developer_message_to_requests(expected: &mut Value, developer_text: &str) {
+    let developer_message = json!({
+        "type": "message",
+        "role": "developer",
+        "content": [
+            {
+                "type": "input_text",
+                "text": developer_text,
+            }
+        ],
+    });
+
+    let Some(expected_arr) = expected.as_array_mut() else {
+        return;
+    };
+
+    for request in expected_arr {
+        let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        input.insert(0, developer_message.clone());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 /// Scenario: compact an initial conversation, resume it, fork one turn back, and
 /// ensure the model-visible history matches expectations at each request.
@@ -216,11 +240,15 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let developer_instructions = requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_context = requests[0]["input"][1]["content"][0]["text"]
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let environment_context = requests[0]["input"][2]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -581,6 +609,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         usert_turn_3_after_resume,
         user_turn_3_after_fork
     ]);
+    prepend_developer_message_to_requests(&mut expected, &developer_instructions);
     normalize_line_endings(&mut expected);
     if let Some(arr) = expected.as_array_mut() {
         normalize_compact_prompts(arr);
@@ -664,11 +693,15 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let developer_instructions = requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_instructions = requests[0]["input"][1]["content"][0]["text"]
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let environment_instructions = requests[0]["input"][2]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -736,6 +769,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         ],
       }
     ]);
+    prepend_developer_message_to_requests(&mut expected, &developer_instructions);
     normalize_line_endings(&mut expected);
     let mut last_request_after_2_compacts = json!([{
         "instructions": requests[requests.len() -1]["instructions"],

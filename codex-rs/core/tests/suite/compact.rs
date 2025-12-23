@@ -21,7 +21,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
-use std::collections::VecDeque;
 use tempfile::TempDir;
 
 use core_test_support::responses::ev_assistant_message;
@@ -67,23 +66,6 @@ fn auto_summary(summary: &str) -> String {
 
 fn summary_with_prefix(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{summary}")
-}
-
-fn drop_call_id(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(obj) => {
-            obj.retain(|k, _| k != "call_id");
-            for v in obj.values_mut() {
-                drop_call_id(v);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for v in arr {
-                drop_call_id(v);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn set_test_compact_prompt(config: &mut Config) {
@@ -594,6 +576,15 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         values
             .iter()
             .filter(|value| {
+                if value
+                    .get("type")
+                    .and_then(|ty| ty.as_str())
+                    .is_some_and(|ty| ty == "message")
+                    && value.get("role").and_then(|role| role.as_str()) == Some("developer")
+                {
+                    return false;
+                }
+
                 if value
                     .get("type")
                     .and_then(|ty| ty.as_str())
@@ -1639,58 +1630,47 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         "compact requests should consistently include or omit the summarization prompt"
     );
 
-    let mut final_output = requests
+    let final_input = requests
         .last()
         .unwrap_or_else(|| panic!("final turn request missing for {final_user_message}"))
-        .input()
-        .into_iter()
-        .collect::<VecDeque<_>>();
+        .input();
 
-    // System prompt
-    final_output.pop_front();
-    // Developer instructions
-    final_output.pop_front();
+    let relevant_user_texts: Vec<&str> = final_input
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(|v| v.as_str()) != Some("message")
+                || item.get("role").and_then(|v| v.as_str()) != Some("user")
+            {
+                return None;
+            }
 
-    let _ = final_output
-        .iter_mut()
-        .map(drop_call_id)
-        .collect::<Vec<_>>();
+            let text = item
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|entry| entry.get("text"))
+                .and_then(|v| v.as_str())?;
 
-    let expected = vec![
-        json!({
-            "content": vec![json!({
-                "text": first_user_message,
-                "type": "input_text",
-            })],
-            "role": "user",
-            "type": "message",
-        }),
-        json!({
-            "content": vec![json!({
-                "text": second_user_message,
-                "type": "input_text",
-            })],
-            "role": "user",
-            "type": "message",
-        }),
-        json!({
-            "content": vec![json!({
-                "text": expected_second_summary,
-                "type": "input_text",
-            })],
-            "role": "user",
-            "type": "message",
-        }),
-        json!({
-            "content": vec![json!({
-                "text": final_user_message,
-                "type": "input_text",
-            })],
-            "role": "user",
-            "type": "message",
-        }),
-    ];
-    assert_eq!(final_output, expected);
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("# AGENTS.md instructions for ")
+                || trimmed.starts_with("<environment_context>")
+            {
+                return None;
+            }
+
+            Some(text)
+        })
+        .collect();
+
+    assert_eq!(
+        relevant_user_texts,
+        vec![
+            first_user_message,
+            second_user_message,
+            expected_second_summary.as_str(),
+            final_user_message,
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

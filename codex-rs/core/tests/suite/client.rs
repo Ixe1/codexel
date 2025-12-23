@@ -625,17 +625,19 @@ async fn includes_user_instructions_message_in_request() {
             .unwrap()
             .contains("be nice")
     );
-    assert_message_role(&request_body["input"][0], "user");
-    assert_message_starts_with(&request_body["input"][0], "# AGENTS.md instructions for ");
-    assert_message_ends_with(&request_body["input"][0], "</INSTRUCTIONS>");
-    let ui_text = request_body["input"][0]["content"][0]["text"]
+    assert_message_role(&request_body["input"][0], "developer");
+    assert_message_starts_with(&request_body["input"][0], "## SpawnSubagent");
+    assert_message_role(&request_body["input"][1], "user");
+    assert_message_starts_with(&request_body["input"][1], "# AGENTS.md instructions for ");
+    assert_message_ends_with(&request_body["input"][1], "</INSTRUCTIONS>");
+    let ui_text = request_body["input"][1]["content"][0]["text"]
         .as_str()
         .expect("invalid message content");
     assert!(ui_text.contains("<INSTRUCTIONS>"));
     assert!(ui_text.contains("be nice"));
-    assert_message_role(&request_body["input"][1], "user");
-    assert_message_starts_with(&request_body["input"][1], "<environment_context>");
-    assert_message_ends_with(&request_body["input"][1], "</environment_context>");
+    assert_message_role(&request_body["input"][2], "user");
+    assert_message_starts_with(&request_body["input"][2], "<environment_context>");
+    assert_message_ends_with(&request_body["input"][2], "</environment_context>");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -689,8 +691,10 @@ async fn skills_append_to_instructions() {
     let request = resp_mock.single_request();
     let request_body = request.body_json();
 
-    assert_message_role(&request_body["input"][0], "user");
-    let instructions_text = request_body["input"][0]["content"][0]["text"]
+    assert_message_role(&request_body["input"][0], "developer");
+    assert_message_starts_with(&request_body["input"][0], "## SpawnSubagent");
+    assert_message_role(&request_body["input"][1], "user");
+    let instructions_text = request_body["input"][1]["content"][0]["text"]
         .as_str()
         .expect("instructions text");
     assert!(
@@ -1054,7 +1058,11 @@ async fn includes_developer_instructions_message_in_request() {
             .contains("be nice")
     );
     assert_message_role(&request_body["input"][0], "developer");
-    assert_message_starts_with(&request_body["input"][0], "be useful");
+    assert_message_starts_with(&request_body["input"][0], "## SpawnSubagent");
+    let developer_text = request_body["input"][0]["content"][0]["text"]
+        .as_str()
+        .expect("invalid message content");
+    assert!(developer_text.contains("## SpawnSubagent"));
     assert_message_ends_with(&request_body["input"][0], "be useful");
     assert_message_role(&request_body["input"][1], "user");
     assert_message_starts_with(&request_body["input"][1], "# AGENTS.md instructions for ");

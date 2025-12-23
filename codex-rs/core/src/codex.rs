@@ -567,10 +567,14 @@ impl Session {
                         developer_instructions,
                     )
                 }
-                SessionSource::Exec
-                | SessionSource::Mcp
-                | SessionSource::SubAgent(_)
-                | SessionSource::Unknown => session_configuration.developer_instructions.clone(),
+                SessionSource::Exec => {
+                    crate::tools::spec::prepend_spawn_subagent_developer_instructions(
+                        session_configuration.developer_instructions.clone(),
+                    )
+                }
+                SessionSource::Mcp | SessionSource::SubAgent(_) | SessionSource::Unknown => {
+                    session_configuration.developer_instructions.clone()
+                }
             },
             base_instructions: session_configuration.base_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),

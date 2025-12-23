@@ -64,7 +64,11 @@ Rules:
 "#;
 
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
-Use `spawn_subagent` to delegate short, read-only research tasks. Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
+Use `spawn_subagent` to delegate short, read-only research tasks (repo exploration, tracing control flow, summarizing how something works). Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
+
+Decision rule:
+- If you are about to do exploratory repo work (unclear entry point, you expect to inspect > ~3 files, or you have multiple independent questions), spawn 1–3 subagents and keep working in parallel.
+- If you already know the exact file/symbol to inspect, do not spawn a subagent; read it directly.
 
 When to use it:
 - Broad context gathering (you don't know the entry point yet).
@@ -83,6 +87,7 @@ Requirements:
 Prompt tips:
 - Ask for specific outputs (e.g. “list the relevant files and explain the control flow”).
 - Prefer small, targeted file reads over dumping large files.
+- If you need a control-flow answer, ask for a short “entry point → key calls → result” trace.
 
 Parallelism:
 - If you have multiple independent research questions, prefer launching multiple subagents in parallel rather than running them serially.
@@ -99,6 +104,9 @@ Example tool call:
 Example (parallel):
 `spawn_subagent({ "description": "Locate config schema for auth", "prompt": "Find where auth config is defined and how it is loaded. Return files + key functions.", "label": "auth_cfg" })`
 `spawn_subagent({ "description": "Trace token usage in requests", "prompt": "Find where tokens are attached to outbound requests. Return files + key call sites.", "label": "auth_use" })`
+
+Example (control flow):
+`spawn_subagent({ "description": "Trace request path for /responses", "prompt": "Trace the control flow from the public API entry point to the outbound HTTP request for /responses. Return files + key functions + a short call chain.", "label": "responses_flow" })`
 "#;
 
 pub(crate) const WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS: &str = r#"## Web UI Quality Bar (only when building/changing web UI)
@@ -647,7 +655,10 @@ fn create_spawn_subagent_tool() -> ToolSpec {
     root_props.insert(
         "prompt".to_string(),
         JsonSchema::String {
-            description: Some("Prompt to send to the read-only subagent.".to_string()),
+            description: Some(
+                "Self-contained prompt to send to the read-only subagent; ask for specific outputs (files, symbols, short control-flow traces)."
+                    .to_string(),
+            ),
         },
     );
     root_props.insert(
@@ -662,9 +673,7 @@ fn create_spawn_subagent_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: SPAWN_SUBAGENT_TOOL_NAME.to_string(),
-        description:
-            "Spawn a read-only subagent to handle a focused prompt and return its response."
-                .to_string(),
+        description: "Spawn a read-only subagent for focused repo research (no edits, no user questions) and return its response.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties: root_props,
