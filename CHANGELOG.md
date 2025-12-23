@@ -11,14 +11,40 @@ edited between the markers.
 
 ### Highlights
 
-- _No fork-only changes yet._
+- Plan Mode: `/plan` (and plan variants) can use web search when `web_search_request` is enabled.
+- Plan Mode: refine plan mode and plan-variant prompt guidance.
+- Core: strengthen `ask_user_question` guidance and add a web UI quality bar for planning.
+- CI: harden workflow conditionals and YAML formatting.
+- Packaging: add Homebrew cask workflow and macOS artifacts.
 
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
+#### Fixes
+- Fix YAML heredoc indentation
+- Fix rust-ci job if expressions
+- Fix workflows: avoid secrets in if
 
-_No fork-only changes yet._
+#### Documentation
+- docs: keep README ASCII-only
+- docs: prettier
 
+#### Core
+- core: strengthen ask_user_question guidance
+- core: add web UI quality bar instructions
+
+#### Plan Mode
+- plan: refine plan mode + variants prompts
+- plan: allow web search in /plan
+
+#### Branding & Packaging
+- codex-cli: bump codexel npm version to 0.1.3
+
+#### Other
+- changelog: update 0.1.3 for upstream merge
+- Add Homebrew cask workflow and macOS artifacts
+- Use macos-15-intel for x86_64 builds
+- release: bump versions to 0.1.4
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
@@ -42,44 +68,35 @@ Release commit: 44f8df17aa11051fcf3919a9c16fe3b9c3296d66
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=79d019672838ccc532247588d31d2eda81fb42d8..44f8df17aa11051fcf3919a9c16fe3b9c3296d66 -->
-
 #### Fixes
-
 - Fix sdk workflow codexel build
 - Fix update checks and codex home isolation
 
 #### Documentation
-
 - docs: clarify Codexel fork positioning
 - docs: move What's different up and mention ask_user_question
 
 #### TUI
-
 - tui: show subagent tool calls in history
 - tui: keep subagent history updating
 - tui: keep subagent cell live during inserts
 
 #### Core
-
 - core: fix subagent config constraints
 
 #### Plan Mode
-
 - subagent: stream activity and match plan-variants UI
 - Persist approved plan and hide .codexel
 
 #### Branding & Packaging
-
 - chore: ignore .codexel
 - tests: keep codexel CLI suites green
 
 #### Chores
-
 - chore: update login flow and tui snapshots
 - chore: regenerate changelog
 
 #### Other
-
 - Update changelog for 0.1.2 release
 - Adjust changelog release metadata
 - Skip macOS rust-ci jobs on PRs
@@ -112,21 +129,16 @@ Release commit: 79d019672838ccc532247588d31d2eda81fb42d8
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=d02343f99e3260308b2355f26e382ae04b14d7e7..79d019672838ccc532247588d31d2eda81fb42d8 -->
-
 #### Fixes
-
 - Fix Codexel update actions
 
 #### Plan Mode
-
 - Deduplicate plan updates in history
 
 #### Branding & Packaging
-
 - Add GitHub Release publishing for Codexel
 
 #### Other
-
 - Update changelog for 0.1.1 (mac build)
 - Update status snapshots
 - Delay rate limit polling until user input
@@ -148,23 +160,18 @@ Release commit: d02343f99e3260308b2355f26e382ae04b14d7e7
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=3e57f558eff5b400292a6ad3c9df2721648aed6f..d02343f99e3260308b2355f26e382ae04b14d7e7 -->
-
 #### Fixes
-
 - Fix npm publish workflow yaml
 
 #### Documentation
-
 - docs: document changelog workflow in AGENTS
 - docs: remove interactive questions from AGENTS
 
 #### Branding & Packaging
-
 - changelog: add Codexel changelog and generator
 - Prepare Codexel npm 0.1.1 release
 
 #### Other
-
 - Update changelog for 0.1.1
 - Skip macOS in npm publish workflow
 <!-- END GENERATED DETAILS -->
@@ -184,23 +191,18 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=be274cbe6273cb17d756a6cda729d537f15ae49a..3e57f558eff5b400292a6ad3c9df2721648aed6f -->
-
 #### Features
-
 - feat: add /plan mode with plan approval
 
 #### Fixes
-
 - fix(tui2): drop disabled_reason from ask_user_question rows
 
 #### Documentation
-
 - docs: document AskUserQuestion
 - docs: add Windows notes for just
 - docs: fix plan mode note apostrophe
 
 #### TUI
-
 - tui: show plan-variant progress
 - tui: show plan subagent checklist
 - tui: auto-execute approved plans
@@ -211,14 +213,12 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 - tui: make Plan Mode placeholder generic
 
 #### Core
-
 - core: keep plan subagents aligned with session model
 - core: make Plan Mode outputs junior-executable
 - core: pin approved plan into developer instructions
 - core: emit immediate plan progress on approval
 
 #### Plan Mode
-
 - plan: run variants in parallel with status
 - plan: show subagent thinking/writing status
 - plan: show per-variant token usage
@@ -232,17 +232,14 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 - plan: humanize exec activity + multiline goal
 
 #### Branding & Packaging
-
 - Rebrand Codex CLI as Codexel
 - Use @ixe1/codexel npm scope
 - Rebrand headers to Codexel
 
 #### Chores
-
 - chore: fix build after rebasing onto upstream/main
 - chore(core): sync built-in prompts with upstream
 
 #### Other
-
 - Add ask_user_question tool
 <!-- END GENERATED DETAILS -->
