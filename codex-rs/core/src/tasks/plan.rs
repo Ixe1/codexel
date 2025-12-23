@@ -70,6 +70,7 @@ Mini-example (illustrative; do not copy verbatim):
 - Validation: "`cd mytool; cargo test -p mytool-cli`"
 
 Process:
+- If you need repo grounding (unclear entry points / touchpoints), call `plan_explore` once early.
 - Once you understand the goal, call `propose_plan_variants` to generate 3 alternative plans (at most once per draft).
 - Synthesize the final plan (do not just pick a variant verbatim).
 - Present the final plan via `approve_plan`.
@@ -87,7 +88,7 @@ Rules:
 - If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Do not attempt to edit files or run mutating commands (no installs, no git writes, no redirects/heredocs that write files).
 - When the goal is ambiguous in a way that would change the plan materially, ask clarifying questions via AskUserQuestion instead of guessing. Batch questions and avoid prolonged back-and-forth.
-- Do not call `spawn_subagent` in plan mode (it is not available from this session type).
+- If you would otherwise run more than 1-2 repo exploration commands (e.g., `rg`/`ls`/reading files) to get grounded, call `plan_explore` once early instead.
 - Use `propose_plan_variants` to generate 3 alternative plans as input (at most once per plan draft). If it fails, proceed without it.
 - When you have a final plan, call `approve_plan` with:
   - Title: short and specific.

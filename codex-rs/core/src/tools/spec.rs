@@ -66,9 +66,10 @@ Rules:
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
 Use `spawn_subagent` to delegate short, read-only research tasks (repo exploration, tracing control flow, summarizing how something works). Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
 
-Decision rule:
-- If you are about to do exploratory repo work (unclear entry point, you expect to inspect > ~3 files, or you have multiple independent questions), spawn 1–3 subagents and keep working in parallel.
-- If you already know the exact file/symbol to inspect, do not spawn a subagent; read it directly.
+Default behavior (strongly preferred):
+- If you need to explore an unfamiliar repo area, treat subagents as your first move.
+- If you expect to do 2+ repo-search/read steps (multiple `rg`, multiple file opens, “I need to find where X is implemented”), spawn 2–3 subagents first, unless you already know the exact file/symbol to read.
+- While subagents run, keep making progress: do one targeted search/read yourself in parallel, then merge results.
 
 When to use it:
 - Broad context gathering (you don't know the entry point yet).
@@ -88,9 +89,11 @@ Prompt tips:
 - Ask for specific outputs (e.g. “list the relevant files and explain the control flow”).
 - Prefer small, targeted file reads over dumping large files.
 - If you need a control-flow answer, ask for a short “entry point → key calls → result” trace.
+- If you need multiple answers, assign one question per subagent (avoid “do everything” prompts).
 
 Parallelism:
 - If you have multiple independent research questions, prefer launching multiple subagents in parallel rather than running them serially.
+- Prefer 2–3 small, differently-scoped prompts over 1 big prompt (faster convergence and fewer blind spots).
 
 Using results:
 - The subagent response is input for you. Summarize the relevant findings back to the user (include key file paths and small snippets when helpful).
@@ -182,7 +185,7 @@ pub(crate) fn prepend_spawn_subagent_developer_instructions(
     developer_instructions: Option<String>,
 ) -> Option<String> {
     if let Some(existing) = developer_instructions.as_deref()
-        && (existing.contains(SPAWN_SUBAGENT_TOOL_NAME) || existing.contains("SpawnSubagent"))
+        && existing.contains("## SpawnSubagent")
     {
         return developer_instructions;
     }
@@ -201,6 +204,7 @@ pub(crate) struct ToolsConfig {
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
+    pub include_plan_explore_tool: bool,
     pub include_spawn_subagent_tool: bool,
     pub experimental_supported_tools: Vec<String>,
 }
@@ -228,6 +232,10 @@ impl ToolsConfig {
             allow_apply_patch_tool && features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_view_image_tool = features.enabled(Feature::ViewImageTool);
+        let include_plan_explore_tool = matches!(
+            session_source,
+            SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "plan_mode"
+        );
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -263,6 +271,7 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             include_view_image_tool,
+            include_plan_explore_tool,
             include_spawn_subagent_tool: !matches!(session_source, SessionSource::SubAgent(_)),
             experimental_supported_tools: model_family.experimental_supported_tools.clone(),
         }
@@ -642,6 +651,27 @@ fn create_propose_plan_variants_tool() -> ToolSpec {
     })
 }
 
+fn create_plan_explore_tool() -> ToolSpec {
+    let mut root_props = BTreeMap::new();
+    root_props.insert(
+        "goal".to_string(),
+        JsonSchema::String {
+            description: Some("The user's goal to plan for.".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: crate::tools::handlers::PLAN_EXPLORE_TOOL_NAME.to_string(),
+        description: "Run a short, read-only repo exploration pass (via a few exploration subagents) to ground /plan in concrete file paths and entry points.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: root_props,
+            required: Some(vec!["goal".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_spawn_subagent_tool() -> ToolSpec {
     let mut root_props = BTreeMap::new();
     root_props.insert(
@@ -656,7 +686,7 @@ fn create_spawn_subagent_tool() -> ToolSpec {
         "prompt".to_string(),
         JsonSchema::String {
             description: Some(
-                "Self-contained prompt to send to the read-only subagent; ask for specific outputs (files, symbols, short control-flow traces)."
+                "Self-contained prompt to send to the read-only subagent; ask for specific outputs (files, symbols, short control-flow traces). Use one question per subagent when parallelizing."
                     .to_string(),
             ),
         },
@@ -1414,6 +1444,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::PlanApprovalHandler;
+    use crate::tools::handlers::PlanExploreHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::PlanVariantsHandler;
     use crate::tools::handlers::ReadFileHandler;
@@ -1431,6 +1462,7 @@ pub(crate) fn build_specs(
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let plan_approval_handler = Arc::new(PlanApprovalHandler);
+    let plan_explore_handler = Arc::new(PlanExploreHandler);
     let plan_variants_handler = Arc::new(PlanVariantsHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
@@ -1487,6 +1519,14 @@ pub(crate) fn build_specs(
 
     builder.push_spec(create_propose_plan_variants_tool());
     builder.register_handler(PROPOSE_PLAN_VARIANTS_TOOL_NAME, plan_variants_handler);
+
+    if config.include_plan_explore_tool {
+        builder.push_spec(create_plan_explore_tool());
+        builder.register_handler(
+            crate::tools::handlers::PLAN_EXPLORE_TOOL_NAME,
+            plan_explore_handler,
+        );
+    }
 
     if config.include_spawn_subagent_tool {
         builder.push_spec_with_parallel_support(create_spawn_subagent_tool(), true);
