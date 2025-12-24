@@ -176,6 +176,7 @@ mod tests {
                     description: "desc".to_string(),
                     label: "label".to_string(),
                     prompt: "prompt".to_string(),
+                    model: None,
                 },
             }
         )));

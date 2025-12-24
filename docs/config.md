@@ -52,6 +52,7 @@ Supported features:
 | `enable_experimental_windows_sandbox` |  false  | Experimental | Use the Windows restricted-token sandbox              |
 | `tui2`                                |  false  | Experimental | Use the experimental TUI v2 (viewport) implementation |
 | `skills`                              |  false  | Experimental | Enable discovery and injection of skills              |
+| `mini_subagents`                      |  true   | Beta         | Allow the agent to spawn read-only mini subagents (`spawn_mini_subagent`) |
 
 Notes:
 

@@ -93,6 +93,8 @@ pub enum Feature {
     Tui2,
     /// Enable discovery and injection of skills.
     Skills,
+    /// Allow the agent to spawn a read-only mini-model subagent.
+    MiniSubagents,
 }
 
 impl Feature {
@@ -347,6 +349,16 @@ pub const FEATURES: &[FeatureSpec] = &[
             announcement: "NEW! Try shell snapshotting to make your Codex faster. Enable in /experimental!",
         },
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::MiniSubagents,
+        key: "mini_subagents",
+        stage: Stage::Beta {
+            name: "Mini subagents",
+            menu_description: "Enable a dedicated read-only subagent tool that always runs on gpt-5.1-codex-mini.",
+            announcement: "NEW! Try mini subagents for faster, cheaper repo exploration. Enable in /experimental!",
+        },
+        default_enabled: true,
     },
     // Unstable features.
     FeatureSpec {

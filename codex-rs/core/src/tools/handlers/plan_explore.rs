@@ -72,6 +72,7 @@ async fn run_one_explorer(
     parent_ctx: Arc<crate::codex::TurnContext>,
 ) -> String {
     let mut cfg = base_config;
+    let mut invocation = invocation;
 
     // Keep this prompt focused and small; avoid inheriting large caller developer instructions.
     cfg.developer_instructions = Some(format!("{PLAN_EXPLORE_PROMPT}\n\nFocus:\n- {focus}\n"));
@@ -82,6 +83,7 @@ async fn run_one_explorer(
             .clone()
             .unwrap_or_else(|| parent_ctx.client.get_model()),
     );
+    invocation.model = cfg.model.clone();
     cfg.model_reasoning_effort = parent_ctx
         .explore_reasoning_effort
         .or(parent_ctx.client.get_reasoning_effort());
@@ -216,6 +218,7 @@ impl ToolHandler for PlanExploreHandler {
                 description,
                 label: format!("plan_explore_{idx}"),
                 prompt,
+                model: None,
             };
             let base_config = base_config.clone();
             let session = Arc::clone(&session);

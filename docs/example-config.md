@@ -239,6 +239,7 @@ web_search_request = false
 ghost_commit = false
 enable_experimental_windows_sandbox = false
 skills = false
+mini_subagents = true
 
 ################################################################################
 # Experimental toggles (legacy; prefer [features])

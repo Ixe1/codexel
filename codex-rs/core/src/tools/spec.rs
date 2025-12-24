@@ -7,6 +7,8 @@ use crate::tools::handlers::APPROVE_PLAN_TOOL_NAME;
 use crate::tools::handlers::ASK_USER_QUESTION_TOOL_NAME;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::PROPOSE_PLAN_VARIANTS_TOOL_NAME;
+use crate::tools::handlers::SPAWN_MINI_SUBAGENT_LABEL_PREFIX;
+use crate::tools::handlers::SPAWN_MINI_SUBAGENT_TOOL_NAME;
 use crate::tools::handlers::SPAWN_SUBAGENT_LABEL_PREFIX;
 use crate::tools::handlers::SPAWN_SUBAGENT_TOOL_NAME;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
@@ -112,6 +114,27 @@ Example (control flow):
 `spawn_subagent({ "description": "Trace request path for /responses", "prompt": "Trace the control flow from the public API entry point to the outbound HTTP request for /responses. Return files + key functions + a short call chain.", "label": "responses_flow" })`
 "#;
 
+pub(crate) const SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnMiniSubagent
+Use `spawn_mini_subagent` for the same kind of short, read-only research as `spawn_subagent`, but when you explicitly want a fast/cheap subagent.
+
+Key properties:
+- This tool always runs on `gpt-5.1-codex-mini`.
+- Mini subagents cannot edit files and cannot ask the user questions.
+
+When to use it:
+- Quick repo mapping (find relevant files, entry points, call chains).
+- Mechanical migrations where you mostly need search + pattern matching.
+- Lint/snapshot churn where verification is easy.
+
+When NOT to use it:
+- Complex architecture decisions, subtle concurrency issues, or high-stakes security work.
+- Situations where you need deep reasoning and correctness guarantees beyond what a small model can provide.
+
+Usage guidance:
+- Provide a self-contained prompt with explicit output requirements.
+- Prefer 1 question per mini subagent; spawn multiple in parallel if needed.
+"#;
+
 pub(crate) const WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS: &str = r#"## Web UI Quality Bar (only when building/changing web UI)
 When the user's request involves a web UI, raise the quality bar beyond "it works".
 
@@ -198,6 +221,23 @@ pub(crate) fn prepend_spawn_subagent_developer_instructions(
     }
 }
 
+pub(crate) fn prepend_spawn_mini_subagent_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## SpawnMiniSubagent")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
@@ -206,6 +246,7 @@ pub(crate) struct ToolsConfig {
     pub include_view_image_tool: bool,
     pub include_plan_explore_tool: bool,
     pub include_spawn_subagent_tool: bool,
+    pub include_spawn_mini_subagent_tool: bool,
     pub experimental_supported_tools: Vec<String>,
 }
 
@@ -226,6 +267,7 @@ impl ToolsConfig {
             session_source,
             SessionSource::SubAgent(SubAgentSource::Other(label))
                 if label.starts_with(SPAWN_SUBAGENT_LABEL_PREFIX)
+                    || label.starts_with(SPAWN_MINI_SUBAGENT_LABEL_PREFIX)
         );
         let allow_apply_patch_tool = !disable_apply_patch_tool;
         let include_apply_patch_tool =
@@ -236,6 +278,7 @@ impl ToolsConfig {
             session_source,
             SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "plan_mode"
         );
+        let allow_subagent_tools = !matches!(session_source, SessionSource::SubAgent(_));
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -272,7 +315,9 @@ impl ToolsConfig {
             web_search_request: include_web_search_request,
             include_view_image_tool,
             include_plan_explore_tool,
-            include_spawn_subagent_tool: !matches!(session_source, SessionSource::SubAgent(_)),
+            include_spawn_subagent_tool: allow_subagent_tools,
+            include_spawn_mini_subagent_tool: allow_subagent_tools
+                && features.enabled(Feature::MiniSubagents),
             experimental_supported_tools: model_family.experimental_supported_tools.clone(),
         }
     }
@@ -743,6 +788,48 @@ fn create_spawn_subagent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: SPAWN_SUBAGENT_TOOL_NAME.to_string(),
         description: "Spawn a read-only subagent for focused repo research (no edits, no user questions) and return its response.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: root_props,
+            required: Some(vec!["description".to_string(), "prompt".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_spawn_mini_subagent_tool() -> ToolSpec {
+    let mut root_props = BTreeMap::new();
+    root_props.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Required one-sentence, human-friendly description shown in history.".to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "prompt".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Self-contained prompt to send to the read-only mini subagent; ask for specific outputs (files, symbols, short control-flow traces). Use one question per subagent when parallelizing."
+                    .to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "label".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional short label for the subagent session (letters, numbers, _ or -)."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: SPAWN_MINI_SUBAGENT_TOOL_NAME.to_string(),
+        description: "Spawn a read-only mini subagent (always runs on gpt-5.1-codex-mini) for fast repo research; no edits, no user questions."
+            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties: root_props,
@@ -1489,6 +1576,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
+    use crate::tools::handlers::SpawnMiniSubagentHandler;
     use crate::tools::handlers::SpawnSubagentHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
@@ -1507,6 +1595,7 @@ pub(crate) fn build_specs(
     let view_image_handler = Arc::new(ViewImageHandler);
     let ask_user_question_handler = Arc::new(AskUserQuestionHandler);
     let spawn_subagent_handler = Arc::new(SpawnSubagentHandler);
+    let spawn_mini_subagent_handler = Arc::new(SpawnMiniSubagentHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
@@ -1570,6 +1659,11 @@ pub(crate) fn build_specs(
     if config.include_spawn_subagent_tool {
         builder.push_spec_with_parallel_support(create_spawn_subagent_tool(), true);
         builder.register_handler(SPAWN_SUBAGENT_TOOL_NAME, spawn_subagent_handler);
+    }
+
+    if config.include_spawn_mini_subagent_tool {
+        builder.push_spec_with_parallel_support(create_spawn_mini_subagent_tool(), true);
+        builder.register_handler(SPAWN_MINI_SUBAGENT_TOOL_NAME, spawn_mini_subagent_handler);
     }
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
@@ -1840,6 +1934,7 @@ mod tests {
             create_approve_plan_tool(),
             create_propose_plan_variants_tool(),
             create_spawn_subagent_tool(),
+            create_spawn_mini_subagent_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1886,6 +1981,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1907,6 +2003,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1931,6 +2028,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1956,6 +2054,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1978,6 +2077,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "view_image",
             ],
         );
@@ -1998,6 +2098,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -2019,6 +2120,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "view_image",
             ],
         );
@@ -2039,6 +2141,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -2061,6 +2164,7 @@ mod tests {
         let (tools, _) = build_specs(&tools_config, None).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
         assert!(!tool_names.contains(&"spawn_subagent"));
+        assert!(!tool_names.contains(&"spawn_mini_subagent"));
         assert!(!tool_names.contains(&"apply_patch"));
     }
 
@@ -2080,6 +2184,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -2104,6 +2209,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "web_search",
                 "view_image",
             ],

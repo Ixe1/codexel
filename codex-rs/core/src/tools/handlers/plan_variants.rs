@@ -191,6 +191,7 @@ impl ToolHandler for PlanVariantsHandler {
                     ),
                     label: format!("plan_variant_{idx}"),
                     prompt: format!("Goal: {goal}\n\nReturn plan variant #{idx}."),
+                    model: None,
                 };
                 let out = run_one_variant(PlanVariantRunArgs {
                     call_id: variant_call_id,
@@ -262,6 +263,7 @@ async fn run_one_variant(args: PlanVariantRunArgs) -> PlanOutputEvent {
     } = args;
 
     let mut cfg = base_config.clone();
+    let mut invocation = invocation;
 
     // Do not override the base/system prompt; some environments restrict it to whitelisted prompts.
     // Put plan-variant guidance in developer instructions instead.
@@ -279,6 +281,7 @@ async fn run_one_variant(args: PlanVariantRunArgs) -> PlanOutputEvent {
             .clone()
             .unwrap_or_else(|| parent_ctx.client.get_model()),
     );
+    invocation.model = cfg.model.clone();
     cfg.model_reasoning_effort = parent_ctx
         .plan_reasoning_effort
         .or(parent_ctx.client.get_reasoning_effort());

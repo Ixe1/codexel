@@ -1148,13 +1148,18 @@ impl HistoryCell for SubAgentToolCallCell {
         let elapsed = self.duration.unwrap_or_else(|| self.start_time.elapsed());
         let elapsed = fmt_subagent_duration(elapsed);
 
-        let mut header_spans: Vec<Span<'static>> = vec![
-            indicator,
-            " ".into(),
-            "Subagent:".bold(),
-            " ".into(),
-            summary.into(),
-        ];
+        let mut header_spans: Vec<Span<'static>> = vec![indicator, " ".into(), "Subagent".bold()];
+        if self.invocation.label.starts_with("plan_explore_") {
+            header_spans.push(" ".into());
+            header_spans.push("[Explorer]".cyan().bold());
+        }
+        if self.invocation.model.as_deref() == Some("gpt-5.1-codex-mini") {
+            header_spans.push(" ".into());
+            header_spans.push("[Mini]".magenta().bold());
+        }
+        header_spans.push(":".bold());
+        header_spans.push(" ".into());
+        header_spans.push(summary.into());
         let mut meta = format!(" ({elapsed}");
         if let Some(tokens) = self.tokens.and_then(fmt_subagent_tokens) {
             meta.push_str(&format!(", {tokens} tok"));
@@ -1864,6 +1869,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::time::Duration;
 
     use codex_core::protocol::ExecCommandSource;
     use mcp_types::CallToolResult;
@@ -1902,8 +1908,63 @@ mod tests {
             description: "Summarize the auth flow".to_string(),
             label: "alpha".to_string(),
             prompt: "Prompt".to_string(),
+            model: None,
         };
         assert_eq!(subagent_summary(&invocation), "Summarize the auth flow");
+    }
+
+    #[test]
+    fn subagent_cell_renders_mini_badge() {
+        let invocation = SubAgentInvocation {
+            description: "Trace control flow".to_string(),
+            label: "mini".to_string(),
+            prompt: "Prompt".to_string(),
+            model: Some("gpt-5.1-codex-mini".to_string()),
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Subagent [Mini]:"))
+        );
+    }
+
+    #[test]
+    fn subagent_cell_renders_explorer_badge() {
+        let invocation = SubAgentInvocation {
+            description: "Repo map".to_string(),
+            label: "plan_explore_1".to_string(),
+            prompt: "Prompt".to_string(),
+            model: None,
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Subagent [Explorer]:"))
+        );
+    }
+
+    #[test]
+    fn subagent_cell_renders_explorer_and_mini_badges() {
+        let invocation = SubAgentInvocation {
+            description: "Repo map".to_string(),
+            label: "plan_explore_1".to_string(),
+            prompt: "Prompt".to_string(),
+            model: Some("gpt-5.1-codex-mini".to_string()),
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Subagent [Explorer] [Mini]:"))
+        );
     }
 
     #[tokio::test]

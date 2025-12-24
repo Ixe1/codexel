@@ -1695,6 +1695,7 @@ async fn subagent_history_cell_keeps_updating_after_other_history_is_inserted() 
             description: "Alpha task".to_string(),
             label: "alpha".to_string(),
             prompt: "Prompt".to_string(),
+            model: None,
         },
     });
 

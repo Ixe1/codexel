@@ -607,14 +607,36 @@ impl Session {
                         crate::tools::spec::prepend_clarification_policy_developer_instructions(
                             developer_instructions,
                         );
-                    crate::tools::spec::prepend_spawn_subagent_developer_instructions(
-                        developer_instructions,
-                    )
+                    let developer_instructions =
+                        crate::tools::spec::prepend_spawn_subagent_developer_instructions(
+                            developer_instructions,
+                        );
+                    if per_turn_config
+                        .features
+                        .enabled(crate::features::Feature::MiniSubagents)
+                    {
+                        crate::tools::spec::prepend_spawn_mini_subagent_developer_instructions(
+                            developer_instructions,
+                        )
+                    } else {
+                        developer_instructions
+                    }
                 }
                 SessionSource::Exec => {
-                    crate::tools::spec::prepend_spawn_subagent_developer_instructions(
-                        session_configuration.developer_instructions.clone(),
-                    )
+                    let developer_instructions =
+                        crate::tools::spec::prepend_spawn_subagent_developer_instructions(
+                            session_configuration.developer_instructions.clone(),
+                        );
+                    if per_turn_config
+                        .features
+                        .enabled(crate::features::Feature::MiniSubagents)
+                    {
+                        crate::tools::spec::prepend_spawn_mini_subagent_developer_instructions(
+                            developer_instructions,
+                        )
+                    } else {
+                        developer_instructions
+                    }
                 }
                 SessionSource::Mcp | SessionSource::SubAgent(_) | SessionSource::Unknown => {
                     session_configuration.developer_instructions.clone()
@@ -3244,6 +3266,7 @@ mod tests {
             description: "Test subagent".to_string(),
             label: "test_subagent".to_string(),
             prompt: "noop".to_string(),
+            model: None,
         };
         session
             .send_event(

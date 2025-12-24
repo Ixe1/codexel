@@ -1208,6 +1208,9 @@ pub struct SubAgentInvocation {
     pub label: String,
     /// Prompt sent to the subagent.
     pub prompt: String,
+    /// Model slug used for this subagent invocation (when known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]

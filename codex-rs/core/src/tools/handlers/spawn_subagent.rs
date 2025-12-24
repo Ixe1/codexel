@@ -72,6 +72,7 @@ pub(crate) fn parse_spawn_subagent_invocation(
         description,
         label,
         prompt: prompt.to_string(),
+        model: None,
     })
 }
 
@@ -106,7 +107,7 @@ impl ToolHandler for SpawnSubagentHandler {
             ));
         }
 
-        let invocation = parse_spawn_subagent_invocation(&arguments)
+        let mut invocation = parse_spawn_subagent_invocation(&arguments)
             .map_err(FunctionCallError::RespondToModel)?;
         let label = invocation.label.clone();
         let subagent_label = format!("{SPAWN_SUBAGENT_LABEL_PREFIX}_{label}");
@@ -120,6 +121,7 @@ impl ToolHandler for SpawnSubagentHandler {
                 .clone()
                 .unwrap_or_else(|| turn.client.get_model()),
         );
+        invocation.model = cfg.model.clone();
         cfg.model_reasoning_effort = turn
             .subagent_reasoning_effort
             .or(turn.client.get_reasoning_effort());
