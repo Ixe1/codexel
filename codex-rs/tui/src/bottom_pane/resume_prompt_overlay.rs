@@ -117,8 +117,15 @@ impl crate::render::renderable::Renderable for ResumePromptOverlay {
         block.render(area, buf);
 
         let inset = inner.inset(Insets::vh(1, 2));
-        let [header_area, options_area] =
-            Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(inset);
+        let option_height: u16 = 1;
+        let options_needed = option_height.saturating_mul(2);
+        let header_height = inset.height.saturating_sub(options_needed);
+        let [header_area, opt0_area, opt1_area] = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Length(option_height),
+            Constraint::Length(option_height),
+        ])
+        .areas(inset);
 
         let mut header = Vec::new();
         header.push(Line::from(vec![
@@ -144,23 +151,22 @@ impl crate::render::renderable::Renderable for ResumePromptOverlay {
             "Continue sends a new message; it does not auto-replay tool calls.".dim(),
         ]));
 
-        for (i, line) in header.into_iter().enumerate() {
-            let y = header_area.y.saturating_add(i as u16);
-            let bottom = header_area.y.saturating_add(header_area.height);
-            if y >= bottom {
-                break;
+        if header_area.height > 0 {
+            for (i, line) in header.into_iter().enumerate() {
+                let y = header_area.y.saturating_add(i as u16);
+                let bottom = header_area.y.saturating_add(header_area.height);
+                if y >= bottom {
+                    break;
+                }
+                let line_area = Rect {
+                    x: header_area.x,
+                    y,
+                    width: header_area.width,
+                    height: 1,
+                };
+                line.render(line_area, buf);
             }
-            let line_area = Rect {
-                x: header_area.x,
-                y,
-                width: header_area.width,
-                height: 1,
-            };
-            line.render(line_area, buf);
         }
-
-        let [opt0_area, opt1_area] =
-            Layout::vertical([Constraint::Length(2), Constraint::Length(2)]).areas(options_area);
 
         let option_0 = selection_option_row(
             0,
