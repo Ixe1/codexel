@@ -4,6 +4,7 @@ expression: terminal.backend()
 ---
 "                                                                                "
 "• Booting MCP server: alpha (0s • esc to interrupt)                             "
+"  └ alpha starting                                                              "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "

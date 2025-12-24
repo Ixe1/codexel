@@ -8,6 +8,7 @@ pub mod router;
 pub mod runtimes;
 pub mod sandboxing;
 pub mod spec;
+pub(crate) mod subagent_runner;
 
 use crate::exec::ExecToolCallOutput;
 use crate::truncate::TruncationPolicy;

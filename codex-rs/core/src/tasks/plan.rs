@@ -70,7 +70,9 @@ Mini-example (illustrative; do not copy verbatim):
 - Validation: "`cd mytool; cargo test -p mytool-cli`"
 
 Process:
-- If you need repo grounding (unclear entry points / touchpoints), call `plan_explore` once early.
+- At the beginning of /plan, get repo grounding via `plan_explore` (unless the user provided explicit touchpoints/paths and you truly don't need discovery).
+- If you learn new constraints (e.g. from clarification answers) that materially change touchpoints, you may call `plan_explore` again.
+- Do not do repo exploration directly in the plan-mode main context unless touchpoints are already known or `plan_explore` fails.
 - Once you understand the goal, call `propose_plan_variants` to generate 3 alternative plans (at most once per draft).
 - Synthesize the final plan (do not just pick a variant verbatim).
 - Present the final plan via `approve_plan`.
@@ -84,11 +86,12 @@ const PLAN_MODE_DEVELOPER_PREFIX: &str = r#"## Plan Mode (Slash Command)
 Goal: produce a clear, actionable implementation plan for the user's request without making code changes.
 
 Rules:
-- You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- Prefer `plan_explore` for repo grounding: do not run repo exploration commands directly unless touchpoints are already known (e.g. user specified files) or `plan_explore` fails.
+- If you must explore directly, keep it minimal (2-6 targeted commands) and avoid dumping large files.
 - If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Do not attempt to edit files or run mutating commands (no installs, no git writes, no redirects/heredocs that write files).
 - When the goal is ambiguous in a way that would change the plan materially, ask clarifying questions via AskUserQuestion instead of guessing. Batch questions and avoid prolonged back-and-forth.
-- If you would otherwise run more than 1-2 repo exploration commands (e.g., `rg`/`ls`/reading files) to get grounded, call `plan_explore` once early instead.
+- Discovery order: if touchpoints are not already known, call `plan_explore` early (usually as your first action). Ask clarification questions after reading the reports. Re-run `plan_explore` if clarification answers change the likely touchpoints.
 - Use `propose_plan_variants` to generate 3 alternative plans as input (at most once per plan draft). If it fails, proceed without it.
 - When you have a final plan, call `approve_plan` with:
   - Title: short and specific.
@@ -198,12 +201,15 @@ async fn start_plan_conversation(
         .developer_instructions
         .clone()
         .unwrap_or_default();
+    // Keep plan-mode guidance at the top; append the global clarification policy after it (as part
+    // of the inherited developer instructions) to avoid it taking precedence over plan-mode's
+    // discovery order.
+    let existing =
+        crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(existing))
+            .unwrap_or_default();
     let developer_instructions =
         build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
-    sub_agent_config.developer_instructions =
-        crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(
-            developer_instructions,
-        ));
+    sub_agent_config.developer_instructions = Some(developer_instructions);
 
     constrain_features_for_planning(&mut sub_agent_config.features);
 

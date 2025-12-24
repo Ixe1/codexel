@@ -659,6 +659,45 @@ fn create_plan_explore_tool() -> ToolSpec {
             description: Some("The user's goal to plan for.".to_string()),
         },
     );
+    let mut explorer_props = BTreeMap::new();
+    explorer_props.insert(
+        "focus".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Required. One-sentence focus for this explorer (what to look for).".to_string(),
+            ),
+        },
+    );
+    explorer_props.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional. Human-friendly label shown in history; defaults to focus.".to_string(),
+            ),
+        },
+    );
+    explorer_props.insert(
+        "prompt".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional. Prompt to send to the subagent; defaults to goal + focus.".to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "explorers".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::Object {
+                properties: explorer_props,
+                required: Some(vec!["focus".to_string()]),
+                additional_properties: Some(false.into()),
+            }),
+            description: Some(
+                "Optional. Override the default 3 exploration subagents (order matters)."
+                    .to_string(),
+            ),
+        },
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: crate::tools::handlers::PLAN_EXPLORE_TOOL_NAME.to_string(),

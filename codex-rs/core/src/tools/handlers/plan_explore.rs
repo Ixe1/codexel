@@ -1,22 +1,14 @@
 use async_trait::async_trait;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentInvocation;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::SubAgentToolCallActivityEvent;
-use codex_protocol::protocol::SubAgentToolCallBeginEvent;
-use codex_protocol::protocol::SubAgentToolCallEndEvent;
-use codex_protocol::protocol::SubAgentToolCallTokensEvent;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 
-use crate::codex_delegate::run_codex_conversation_one_shot;
 use crate::config::Config;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
@@ -33,9 +25,18 @@ pub struct PlanExploreHandler;
 #[serde(deny_unknown_fields)]
 struct PlanExploreArgs {
     goal: String,
+    explorers: Option<Vec<ExplorerArgs>>,
 }
 
-const TOTAL_EXPLORERS: usize = 3;
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExplorerArgs {
+    focus: String,
+    description: Option<String>,
+    prompt: Option<String>,
+}
+
+const DEFAULT_TOTAL_EXPLORERS: usize = 3;
 
 const PLAN_EXPLORE_PROMPT: &str = r#"You are a read-only exploration subagent helping another agent write an implementation plan.
 
@@ -61,83 +62,15 @@ fn explorer_focus(idx: usize) -> &'static str {
     }
 }
 
-struct CancelOnDrop {
-    token: CancellationToken,
-}
-
-impl CancelOnDrop {
-    fn new(token: CancellationToken) -> Self {
-        Self { token }
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.token.cancel();
-    }
-}
-
-fn fmt_exec_activity_command(command: &[String]) -> String {
-    if command.is_empty() {
-        return "shell".to_string();
-    }
-
-    let cmd = if let Some((_shell, script)) = crate::parse_command::extract_shell_command(command) {
-        let script = script.trim();
-        if script.is_empty() {
-            "shell".to_string()
-        } else {
-            script
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    } else {
-        crate::parse_command::shlex_join(command)
-    };
-
-    if cmd.is_empty() {
-        "shell".to_string()
-    } else {
-        cmd
-    }
-}
-
-fn activity_for_event(msg: &EventMsg) -> Option<String> {
-    match msg {
-        EventMsg::TaskStarted(_) => Some("starting".to_string()),
-        EventMsg::UserMessage(_) => Some("sending prompt".to_string()),
-        EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningDelta(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::AgentReasoningRawContentDelta(_)
-        | EventMsg::AgentReasoningSectionBreak(_) => Some("thinking".to_string()),
-        EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => Some("writing".to_string()),
-        EventMsg::ExecCommandBegin(ev) => Some(fmt_exec_activity_command(&ev.command)),
-        EventMsg::McpToolCallBegin(ev) => Some(format!(
-            "mcp {}/{}",
-            ev.invocation.server.trim(),
-            ev.invocation.tool.trim()
-        )),
-        EventMsg::WebSearchBegin(_) => Some("web_search".to_string()),
-        _ => None,
-    }
-}
-
 async fn run_one_explorer(
     call_id: String,
     invocation: SubAgentInvocation,
     base_config: Config,
-    goal: String,
     idx: usize,
+    focus: String,
     parent_session: Arc<crate::codex::Session>,
     parent_ctx: Arc<crate::codex::TurnContext>,
 ) -> String {
-    let focus = explorer_focus(idx);
-    let started_at = Instant::now();
-
     let mut cfg = base_config;
 
     // Keep this prompt focused and small; avoid inheriting large caller developer instructions.
@@ -157,138 +90,23 @@ async fn run_one_explorer(
         crate::config::Constrained::allow_any(codex_protocol::protocol::SandboxPolicy::ReadOnly);
 
     let input = vec![UserInput::Text {
-        text: format!("Goal: {goal}\n\nFocus: {focus}"),
+        text: invocation.prompt.clone(),
     }];
 
-    parent_session
-        .send_event(
-            parent_ctx.as_ref(),
-            EventMsg::SubAgentToolCallBegin(SubAgentToolCallBeginEvent {
-                call_id: call_id.clone(),
-                invocation: invocation.clone(),
-            }),
-        )
-        .await;
-    parent_session
-        .send_event(
-            parent_ctx.as_ref(),
-            EventMsg::SubAgentToolCallActivity(SubAgentToolCallActivityEvent {
-                call_id: call_id.clone(),
-                activity: "starting".to_string(),
-            }),
-        )
-        .await;
-
-    let cancel = parent_session
-        .turn_cancellation_token(&parent_ctx.sub_id)
-        .await
-        .map_or_else(CancellationToken::new, |token| token.child_token());
-    let _cancel_guard = CancelOnDrop::new(cancel.clone());
-    let io = match run_codex_conversation_one_shot(
+    match crate::tools::subagent_runner::run_subagent_tool_call(
+        parent_session,
+        parent_ctx,
+        call_id,
+        invocation,
         cfg,
-        Arc::clone(&parent_session.services.auth_manager),
-        Arc::clone(&parent_session.services.models_manager),
         input,
-        Arc::clone(&parent_session),
-        Arc::clone(&parent_ctx),
-        cancel,
-        None,
         SubAgentSource::Other(format!("plan_explore_{idx}")),
     )
     .await
     {
-        Ok(io) => io,
-        Err(err) => {
-            let message = format!("failed to start explorer {idx}/{TOTAL_EXPLORERS}: {err}");
-            parent_session
-                .send_event(
-                    parent_ctx.as_ref(),
-                    EventMsg::SubAgentToolCallEnd(SubAgentToolCallEndEvent {
-                        call_id,
-                        invocation,
-                        duration: started_at.elapsed(),
-                        tokens: None,
-                        result: Err(message.clone()),
-                    }),
-                )
-                .await;
-            return message;
-        }
-    };
-
-    let mut last_agent_message: Option<String> = None;
-    let mut last_activity: Option<String> = None;
-    let mut last_reported_tokens: Option<i64> = None;
-    let mut last_token_update_at: Option<Instant> = None;
-    while let Ok(Event { msg, .. }) = io.rx_event.recv().await {
-        if let EventMsg::TokenCount(ev) = &msg
-            && let Some(info) = &ev.info
-        {
-            let tokens = info.total_token_usage.blended_total();
-            let now = Instant::now();
-            let should_report = match (last_reported_tokens, last_token_update_at) {
-                (Some(prev), Some(prev_at)) => {
-                    tokens > prev
-                        && (tokens - prev >= 250 || now.duration_since(prev_at).as_secs() >= 2)
-                }
-                (Some(prev), None) => tokens > prev,
-                (None, _) => tokens > 0,
-            };
-
-            if should_report {
-                parent_session
-                    .send_event(
-                        parent_ctx.as_ref(),
-                        EventMsg::SubAgentToolCallTokens(SubAgentToolCallTokensEvent {
-                            call_id: call_id.clone(),
-                            tokens,
-                        }),
-                    )
-                    .await;
-                last_reported_tokens = Some(tokens);
-                last_token_update_at = Some(now);
-            }
-        }
-
-        if let Some(activity) = activity_for_event(&msg)
-            && last_activity.as_deref() != Some(activity.as_str())
-        {
-            parent_session
-                .send_event(
-                    parent_ctx.as_ref(),
-                    EventMsg::SubAgentToolCallActivity(SubAgentToolCallActivityEvent {
-                        call_id: call_id.clone(),
-                        activity: activity.clone(),
-                    }),
-                )
-                .await;
-            last_activity = Some(activity);
-        }
-
-        match msg {
-            EventMsg::TaskComplete(ev) => {
-                last_agent_message = ev.last_agent_message;
-                break;
-            }
-            EventMsg::TurnAborted(_) => break,
-            _ => {}
-        }
+        Ok(response) => response,
+        Err(err) => err,
     }
-
-    parent_session
-        .send_event(
-            parent_ctx.as_ref(),
-            EventMsg::SubAgentToolCallEnd(SubAgentToolCallEndEvent {
-                call_id,
-                invocation,
-                duration: started_at.elapsed(),
-                tokens: last_reported_tokens,
-                result: Ok(last_agent_message.clone().unwrap_or_default()),
-            }),
-        )
-        .await;
-
-    last_agent_message.unwrap_or_default()
 }
 
 #[async_trait]
@@ -338,43 +156,87 @@ impl ToolHandler for PlanExploreHandler {
         let base_config = turn.client.config().as_ref().clone();
         let goal = goal.to_string();
 
-        let mut join_set = JoinSet::new();
+        let explorers = match args.explorers {
+            Some(explorers) => {
+                if explorers.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "explorers must be non-empty when provided".to_string(),
+                    ));
+                }
+                explorers
+            }
+            None => (1..=DEFAULT_TOTAL_EXPLORERS)
+                .map(|idx| ExplorerArgs {
+                    focus: explorer_focus(idx).to_string(),
+                    description: None,
+                    prompt: None,
+                })
+                .collect(),
+        };
+
+        let total_explorers = explorers.len();
+
         let started_at = Instant::now();
-        for idx in 1..=TOTAL_EXPLORERS {
+        let mut join_set = JoinSet::new();
+        for (zero_idx, explorer) in explorers.into_iter().enumerate() {
+            let idx = zero_idx + 1;
+            let focus = explorer.focus.trim().to_string();
+            if focus.is_empty() {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "explorers[{zero_idx}] focus must be non-empty"
+                )));
+            }
+
+            let description = explorer.description.map(|d| d.trim().to_string());
+            let description = if description.as_deref().is_some_and(str::is_empty) {
+                None
+            } else {
+                description
+            };
+            let description =
+                description.unwrap_or_else(|| format!("{focus} ({idx}/{total_explorers})"));
+
+            let prompt = explorer.prompt.map(|p| p.trim().to_string());
+            let prompt = if prompt.as_deref().is_some_and(str::is_empty) {
+                None
+            } else {
+                prompt
+            };
+            let prompt = prompt.unwrap_or_else(|| format!("Goal: {goal}\n\nFocus: {focus}"));
+
             let explorer_call_id = format!("{call_id}:plan_explore:{idx}");
             let explorer_invocation = SubAgentInvocation {
-                description: format!(
-                    "Plan explore {idx}/{TOTAL_EXPLORERS}: {}",
-                    explorer_focus(idx)
-                ),
+                description,
                 label: format!("plan_explore_{idx}"),
-                prompt: format!("Goal: {goal}\n\nFocus: {}", explorer_focus(idx)),
+                prompt,
             };
             let base_config = base_config.clone();
-            let goal = goal.clone();
             let session = Arc::clone(&session);
             let turn = Arc::clone(&turn);
+            let focus = focus.clone();
             join_set.spawn(async move {
                 let out = run_one_explorer(
                     explorer_call_id,
                     explorer_invocation,
                     base_config,
-                    goal,
                     idx,
+                    focus.clone(),
                     session,
                     turn,
                 )
                 .await;
-                (idx, out)
+                (idx, focus, out)
             });
         }
 
-        let mut reports_by_idx = vec![String::new(); TOTAL_EXPLORERS];
+        let mut reports_by_idx = vec![String::new(); total_explorers];
+        let mut focus_by_idx = vec![String::new(); total_explorers];
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok((idx, out)) => {
-                    if idx > 0 && idx <= TOTAL_EXPLORERS {
+                Ok((idx, focus, out)) => {
+                    if idx > 0 && idx <= total_explorers {
                         reports_by_idx[idx - 1] = out;
+                        focus_by_idx[idx - 1] = focus;
                     }
                 }
                 Err(err) => {
@@ -390,10 +252,11 @@ impl ToolHandler for PlanExploreHandler {
                 "duration_ms": started_at.elapsed().as_millis(),
                 "reports": reports_by_idx
                     .into_iter()
+                    .zip(focus_by_idx)
                     .enumerate()
-                    .map(|(i, text)| json!({
+                    .map(|(i, (text, focus))| json!({
                         "idx": i + 1,
-                        "focus": explorer_focus(i + 1),
+                        "focus": focus,
                         "text": text,
                     }))
                     .collect::<Vec<_>>(),

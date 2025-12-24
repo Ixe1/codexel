@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -351,7 +350,6 @@ pub(crate) struct ChatWidget {
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
-    plan_variants_progress: Option<PlanVariantsProgress>,
     conversation_id: Option<ConversationId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -380,127 +378,6 @@ pub(crate) struct ChatWidget {
 struct UserMessage {
     text: String,
     image_paths: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProgressStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Clone)]
-struct PlanVariantsProgress {
-    total: usize,
-    steps: Vec<ProgressStatus>,
-    durations: Vec<Option<String>>,
-    last_activity: Vec<Option<String>>,
-    tokens: Vec<Option<String>>,
-}
-
-impl PlanVariantsProgress {
-    fn new(total: usize) -> Self {
-        Self {
-            total,
-            steps: vec![ProgressStatus::Pending; total],
-            durations: vec![None; total],
-            last_activity: vec![None; total],
-            tokens: vec![None; total],
-        }
-    }
-
-    fn variant_label(&self, idx: usize) -> String {
-        if self.total == 3 {
-            match idx {
-                0 => "Minimal".to_string(),
-                1 => "Correctness".to_string(),
-                2 => "DX".to_string(),
-                _ => format!("Variant {}/{}", idx + 1, self.total),
-            }
-        } else {
-            format!("Variant {}/{}", idx + 1, self.total)
-        }
-    }
-
-    fn set_in_progress(&mut self, idx: usize) {
-        if idx < self.steps.len() {
-            self.steps[idx] = ProgressStatus::InProgress;
-        }
-    }
-
-    fn set_completed(&mut self, idx: usize) {
-        if idx < self.steps.len() {
-            self.steps[idx] = ProgressStatus::Completed;
-        }
-    }
-
-    fn set_duration(&mut self, idx: usize, duration: Option<String>) {
-        if idx < self.durations.len() {
-            self.durations[idx] = duration;
-        }
-    }
-
-    fn set_activity(&mut self, idx: usize, activity: Option<String>) {
-        if idx < self.last_activity.len() {
-            self.last_activity[idx] = activity;
-        }
-    }
-
-    fn set_tokens(&mut self, idx: usize, tokens: Option<String>) {
-        if idx < self.tokens.len() {
-            self.tokens[idx] = tokens;
-        }
-    }
-
-    fn render_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
-        use ratatui::style::Stylize;
-        let mut lines = Vec::with_capacity(self.total);
-        for (idx, status) in self.steps.iter().copied().enumerate() {
-            let label = self.variant_label(idx);
-            let status_span = match status {
-                ProgressStatus::Pending => "○".dim(),
-                ProgressStatus::InProgress => "●".cyan(),
-                ProgressStatus::Completed => "✓".green(),
-            };
-
-            let mut spans = vec!["  ".into(), status_span, " ".into(), label.into()];
-            let duration = self.durations.get(idx).and_then(|d| d.as_deref());
-            let tokens = self.tokens.get(idx).and_then(|t| t.as_deref());
-            if duration.is_some() || tokens.is_some() {
-                let mut meta = String::new();
-                meta.push('(');
-                if let Some(duration) = duration {
-                    meta.push_str(duration);
-                }
-                if let Some(tokens) = tokens {
-                    if duration.is_some() {
-                        meta.push_str(", ");
-                    }
-                    meta.push_str(tokens);
-                    meta.push_str(" tok");
-                }
-                meta.push(')');
-                spans.push(" ".into());
-                spans.push(meta.dim());
-            }
-            if status == ProgressStatus::Completed {
-                spans.push(" ".into());
-                spans.push("—".dim());
-                spans.push(" ".into());
-                spans.push("done".dim());
-            } else if let Some(activity) = self.last_activity.get(idx).and_then(|a| a.as_deref()) {
-                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
-                if !activity.is_empty() {
-                    spans.push(" ".into());
-                    spans.push("—".dim());
-                    spans.push(" ".into());
-                    spans.push(activity.to_string().dim());
-                }
-            }
-            lines.push(spans.into());
-        }
-        lines
-    }
 }
 
 impl From<String> for UserMessage {
@@ -558,10 +435,6 @@ impl ChatWidget {
     }
 
     fn set_status_header(&mut self, header: String) {
-        if self.plan_variants_progress.is_some() && header != "Planning plan variants" {
-            self.plan_variants_progress = None;
-            self.clear_status_detail_lines();
-        }
         self.current_status_header = header.clone();
         self.bottom_pane.update_status_header(header);
     }
@@ -716,7 +589,6 @@ impl ChatWidget {
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.set_task_running(true);
         self.retry_status_header = None;
-        self.plan_variants_progress = None;
         self.bottom_pane.set_interrupt_hint_visible(true);
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
@@ -898,11 +770,11 @@ impl ChatWidget {
         self.bottom_pane.set_task_running(true);
         if let Some(current) = &self.mcp_startup_status {
             let total = current.len();
-            let mut starting: Vec<_> = current
+            let mut starting: Vec<String> = current
                 .iter()
                 .filter_map(|(name, state)| {
                     if matches!(state, McpStartupStatus::Starting) {
-                        Some(name)
+                        Some(name.clone())
                     } else {
                         None
                     }
@@ -929,6 +801,20 @@ impl ChatWidget {
                     format!("Booting MCP server: {first}")
                 };
                 self.set_status_header(header);
+
+                let max_details = 4;
+                let mut detail_lines: Vec<Line<'static>> = starting
+                    .iter()
+                    .take(max_details)
+                    .map(|name| vec!["  └ ".dim(), name.clone().into(), " starting".dim()].into())
+                    .collect();
+                if starting.len() > max_details {
+                    let extra = starting.len().saturating_sub(max_details);
+                    detail_lines.push(vec!["  └ ".dim(), format!("… +{extra} more").dim()].into());
+                }
+                self.set_status_detail_lines(detail_lines);
+            } else {
+                self.clear_status_detail_lines();
             }
         }
         self.request_redraw();
@@ -950,6 +836,7 @@ impl ChatWidget {
             self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
         }
 
+        self.clear_status_detail_lines();
         self.mcp_startup_status = None;
         self.bottom_pane.set_task_running(false);
         self.maybe_send_next_queued_input();
@@ -1287,119 +1174,8 @@ impl ChatWidget {
         debug!("BackgroundEvent: {message}");
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(true);
-
-        if let Some(progress) = self.maybe_update_plan_variants_progress(message.as_str()) {
-            self.plan_variants_progress = Some(progress);
-            self.set_status_header("Planning plan variants".to_string());
-            self.set_status_detail_lines(
-                self.plan_variants_progress
-                    .as_ref()
-                    .map(PlanVariantsProgress::render_detail_lines)
-                    .unwrap_or_default(),
-            );
-            return;
-        }
-
-        self.plan_variants_progress = None;
         self.clear_status_detail_lines();
         self.set_status_header(message);
-    }
-
-    fn maybe_update_plan_variants_progress(
-        &mut self,
-        message: &str,
-    ) -> Option<PlanVariantsProgress> {
-        let message = message.trim();
-        if message.starts_with("Plan variants:") {
-            // Expected shapes:
-            // - "Plan variants: generating 1/3…"
-            // - "Plan variants: finished 1/3 (12.3s)"
-            let tokens: Vec<&str> = message.split_whitespace().collect();
-            if tokens.len() < 4 {
-                return None;
-            }
-
-            let action = tokens.get(2).copied()?;
-            let fraction = tokens.get(3).copied()?;
-            let fraction = fraction.trim_end_matches('…');
-            let (idx_str, total_str) = fraction.split_once('/')?;
-            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
-            let total = usize::from_str(total_str).ok()?;
-            if total == 0 {
-                return None;
-            }
-
-            let duration = message
-                .find('(')
-                .and_then(|start| message.rfind(')').map(|end| (start, end)))
-                .and_then(|(start, end)| {
-                    if end > start + 1 {
-                        Some(message[start + 1..end].to_string())
-                    } else {
-                        None
-                    }
-                });
-
-            let mut progress = self
-                .plan_variants_progress
-                .clone()
-                .filter(|p| p.total == total)
-                .unwrap_or_else(|| PlanVariantsProgress::new(total));
-
-            match action {
-                "generating" => {
-                    progress.set_in_progress(idx);
-                    progress.set_duration(idx, None);
-                }
-                "finished" => {
-                    progress.set_completed(idx);
-                    progress.set_duration(idx, duration);
-                    progress.set_activity(idx, None);
-                }
-                _ => return None,
-            }
-
-            return Some(progress);
-        }
-
-        if let Some(rest) = message.strip_prefix("Plan variant ") {
-            // Expected shape:
-            // - "Plan variant 2/3: rg -n ..."
-            // - "Plan variant 2/3: shell rg -n ..." (legacy)
-            let (fraction, activity) = rest.split_once(':')?;
-            let fraction = fraction.trim();
-            let (idx_str, total_str) = fraction.split_once('/')?;
-            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
-            let total = usize::from_str(total_str).ok()?;
-            if total == 0 {
-                return None;
-            }
-
-            let mut progress = self
-                .plan_variants_progress
-                .clone()
-                .filter(|p| p.total == total)
-                .unwrap_or_else(|| PlanVariantsProgress::new(total));
-
-            if idx < progress.steps.len() && progress.steps[idx] == ProgressStatus::Pending {
-                progress.set_in_progress(idx);
-            }
-
-            let activity = activity.trim();
-            if let Some(tokens) = activity.strip_prefix("tokens ") {
-                progress.set_tokens(idx, Some(tokens.trim().to_string()));
-            } else {
-                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
-                if activity.is_empty() {
-                    progress.set_activity(idx, None);
-                } else {
-                    progress.set_activity(idx, Some(activity.to_string()));
-                }
-            }
-            return Some(progress);
-        }
-
-        None
     }
 
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
@@ -1908,7 +1684,6 @@ impl ChatWidget {
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Ready"),
             retry_status_header: None,
-            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
@@ -1992,7 +1767,6 @@ impl ChatWidget {
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Ready"),
             retry_status_header: None,
-            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
