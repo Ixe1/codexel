@@ -672,12 +672,12 @@ mod tests {
     use super::*;
     use codex_protocol::protocol::AgentMessageDeltaEvent;
     use codex_protocol::protocol::AgentMessageEvent;
-    
+
     use codex_protocol::protocol::AgentReasoningEvent;
-    
+
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;
-    
+
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExecOutputStream;

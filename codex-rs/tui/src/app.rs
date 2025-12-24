@@ -726,6 +726,7 @@ impl App {
                 return Ok(false);
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
+            AppEvent::QueueUserText(text) => self.chat_widget.queue_user_text(text),
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();

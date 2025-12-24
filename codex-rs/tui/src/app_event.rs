@@ -40,6 +40,10 @@ pub(crate) enum AppEvent {
     /// bubbling channels through layers of widgets.
     CodexOp(codex_core::protocol::Op),
 
+    /// Queue a synthetic user message (e.g. resume helpers) through the normal
+    /// ChatWidget path so it is persisted to cross-session message history.
+    QueueUserText(String),
+
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
     /// is at most one in-flight search.

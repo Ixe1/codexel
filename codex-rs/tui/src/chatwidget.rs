@@ -105,6 +105,7 @@ use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::PlanApprovalOverlay;
 use crate::bottom_pane::PlanRequestOverlay;
+use crate::bottom_pane::ResumePromptOverlay;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
@@ -357,6 +358,9 @@ pub(crate) struct ChatWidget {
     // When resuming an existing session (selected via resume picker), avoid an
     // immediate redraw on SessionConfigured to prevent a gratuitous UI flicker.
     suppress_session_configured_redraw: bool,
+    resume_last_turn_aborted: bool,
+    resume_had_partial_output: bool,
+    resume_had_in_progress_tools: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
     // Pending notification to show when unfocused on next Draw
@@ -462,7 +466,11 @@ impl ChatWidget {
         self.set_skills(None);
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
+        self.resume_last_turn_aborted = false;
+        self.resume_had_partial_output = false;
+        self.resume_had_in_progress_tools = false;
         let initial_messages = event.initial_messages.clone();
+        let is_resume_replay = initial_messages.is_some();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
         self.add_to_history(history_cell::new_session_info(
@@ -473,6 +481,30 @@ impl ChatWidget {
         ));
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
+        }
+        if is_resume_replay {
+            if self.stream_controller.is_some() {
+                self.resume_had_partial_output = true;
+                self.flush_answer_stream_with_separator();
+            }
+
+            if self.active_cell.is_some() || !self.running_commands.is_empty() {
+                self.resume_had_in_progress_tools = true;
+                self.finalize_turn();
+            }
+
+            if self.initial_user_message.is_none()
+                && (self.resume_last_turn_aborted
+                    || self.resume_had_partial_output
+                    || self.resume_had_in_progress_tools)
+            {
+                self.bottom_pane
+                    .show_view(Box::new(ResumePromptOverlay::new(
+                        self.app_event_tx.clone(),
+                        self.resume_had_partial_output,
+                        self.resume_had_in_progress_tools,
+                    )));
+            }
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
@@ -528,6 +560,10 @@ impl ChatWidget {
         );
         self.bottom_pane.show_selection_view(params);
         self.request_redraw();
+    }
+
+    pub(crate) fn queue_user_text(&mut self, text: String) {
+        self.queue_user_message(text.into());
     }
 
     fn on_agent_message(&mut self, message: String) {
@@ -879,6 +915,18 @@ impl ChatWidget {
         }
 
         self.request_redraw();
+    }
+
+    fn on_interrupted_turn_replay(&mut self, _reason: TurnAbortReason) {
+        self.resume_last_turn_aborted = true;
+        self.resume_had_partial_output =
+            self.resume_had_partial_output || self.stream_controller.is_some();
+        self.resume_had_in_progress_tools = self.resume_had_in_progress_tools
+            || self.active_cell.is_some()
+            || !self.running_commands.is_empty();
+
+        self.flush_answer_stream_with_separator();
+        self.finalize_turn();
     }
 
     fn on_plan_update(&mut self, update: UpdatePlanArgs) {
@@ -1689,6 +1737,9 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
+            resume_last_turn_aborted: false,
+            resume_had_partial_output: false,
+            resume_had_in_progress_tools: false,
             pending_notification: None,
             is_review_mode: false,
             pre_review_token_info: None,
@@ -1772,6 +1823,9 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
+            resume_last_turn_aborted: false,
+            resume_had_partial_output: false,
+            resume_had_in_progress_tools: false,
             pending_notification: None,
             is_review_mode: false,
             pre_review_token_info: None,
@@ -2251,17 +2305,23 @@ impl ChatWidget {
             EventMsg::Error(ErrorEvent { message, .. }) => self.on_error(message),
             EventMsg::McpStartupUpdate(ev) => self.on_mcp_startup_update(ev),
             EventMsg::McpStartupComplete(ev) => self.on_mcp_startup_complete(ev),
-            EventMsg::TurnAborted(ev) => match ev.reason {
-                TurnAbortReason::Interrupted => {
-                    self.on_interrupted_turn(ev.reason);
+            EventMsg::TurnAborted(ev) => {
+                if from_replay {
+                    self.on_interrupted_turn_replay(ev.reason);
+                } else {
+                    match ev.reason {
+                        TurnAbortReason::Interrupted => {
+                            self.on_interrupted_turn(ev.reason);
+                        }
+                        TurnAbortReason::Replaced => {
+                            self.on_error("Turn aborted: replaced by a new task".to_owned())
+                        }
+                        TurnAbortReason::ReviewEnded => {
+                            self.on_interrupted_turn(ev.reason);
+                        }
+                    }
                 }
-                TurnAbortReason::Replaced => {
-                    self.on_error("Turn aborted: replaced by a new task".to_owned())
-                }
-                TurnAbortReason::ReviewEnded => {
-                    self.on_interrupted_turn(ev.reason);
-                }
-            },
+            }
             EventMsg::PlanUpdate(update) => self.on_plan_update(update),
             EventMsg::ExecApprovalRequest(ev) => {
                 // For replayed events, synthesize an empty id (these should not occur).
