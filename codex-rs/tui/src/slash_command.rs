@@ -15,6 +15,7 @@ pub enum SlashCommand {
     Model,
     PlanModel,
     ExploreModel,
+    SubagentModel,
     Approvals,
     Experimental,
     Skills,
@@ -61,6 +62,9 @@ impl SlashCommand {
             SlashCommand::ExploreModel => {
                 "choose what model and reasoning effort to use for /plan exploration"
             }
+            SlashCommand::SubagentModel => {
+                "choose what model and reasoning effort to use for spawned subagents"
+            }
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Experimental => "toggle beta features",
             SlashCommand::Mcp => "list configured MCP tools",
@@ -87,6 +91,7 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::PlanModel
             | SlashCommand::ExploreModel
+            | SlashCommand::SubagentModel
             | SlashCommand::Approvals
             | SlashCommand::Experimental
             | SlashCommand::Review

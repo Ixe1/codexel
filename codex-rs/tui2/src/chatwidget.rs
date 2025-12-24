@@ -1891,6 +1891,9 @@ impl ChatWidget {
             SlashCommand::ExploreModel => {
                 self.open_explore_model_popup();
             }
+            SlashCommand::SubagentModel => {
+                self.open_subagent_model_popup();
+            }
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
             }
@@ -2552,9 +2555,11 @@ impl ChatWidget {
                 model: Some(switch_model.clone()),
                 plan_model: None,
                 explore_model: None,
+                subagent_model: None,
                 effort: Some(Some(default_effort)),
                 plan_effort: None,
                 explore_effort: None,
+                subagent_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateModel(switch_model.clone()));
@@ -2627,6 +2632,10 @@ impl ChatWidget {
         self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Explore);
     }
 
+    pub(crate) fn open_subagent_model_popup(&mut self) {
+        self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Subagent);
+    }
+
     fn open_model_popup_for_target(&mut self, target: crate::app_event::ModelPickerTarget) {
         let chat_model = self.model_family.get_model_slug();
         let current_model = match target {
@@ -2641,6 +2650,11 @@ impl ChatWidget {
                 .explore_model
                 .clone()
                 .or_else(|| self.config.plan_model.clone())
+                .unwrap_or_else(|| chat_model.to_string()),
+            crate::app_event::ModelPickerTarget::Subagent => self
+                .config
+                .subagent_model
+                .clone()
                 .unwrap_or_else(|| chat_model.to_string()),
         };
         let presets: Vec<ModelPreset> =
@@ -2723,6 +2737,11 @@ impl ChatWidget {
                         "Choose a specific model and reasoning level for /plan exploration (current: {current_label})"
                     )
                 }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    format!(
+                        "Choose a specific model and reasoning level for spawned subagents (current: {current_label})"
+                    )
+                }
             });
 
             items.push(SelectionItem {
@@ -2740,6 +2759,9 @@ impl ChatWidget {
                 crate::app_event::ModelPickerTarget::Chat => "Select Model".to_string(),
                 crate::app_event::ModelPickerTarget::Plan => "Select Plan Model".to_string(),
                 crate::app_event::ModelPickerTarget::Explore => "Select Explore Model".to_string(),
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Select Subagent Model".to_string()
+                }
             }),
             subtitle: Some(match target {
                 crate::app_event::ModelPickerTarget::Chat => {
@@ -2750,6 +2772,9 @@ impl ChatWidget {
                 }
                 crate::app_event::ModelPickerTarget::Explore => {
                     "Pick a quick auto mode or browse all models for /plan exploration.".to_string()
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Pick a quick auto mode or browse all models for spawned subagents.".to_string()
                 }
             }),
             footer_hint: Some(standard_popup_hint_line()),
@@ -2798,6 +2823,11 @@ impl ChatWidget {
                 .clone()
                 .or_else(|| self.config.plan_model.clone())
                 .unwrap_or_else(|| chat_model.to_string()),
+            crate::app_event::ModelPickerTarget::Subagent => self
+                .config
+                .subagent_model
+                .clone()
+                .unwrap_or_else(|| chat_model.to_string()),
         };
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
@@ -2833,6 +2863,9 @@ impl ChatWidget {
                 crate::app_event::ModelPickerTarget::Explore => {
                     "Select Explore Model and Effort".to_string()
                 }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Select Subagent Model and Effort".to_string()
+                }
             }),
             subtitle: Some(
                 "Access legacy models by running codex -m <model_name> or in your config.toml"
@@ -2862,9 +2895,11 @@ impl ChatWidget {
                         model: Some(model_for_action.clone()),
                         plan_model: None,
                         explore_model: None,
+                        subagent_model: None,
                         effort: Some(effort_for_action),
                         plan_effort: None,
                         explore_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                     tx.send(AppEvent::UpdateModel(model_for_action.clone()));
@@ -2887,9 +2922,11 @@ impl ChatWidget {
                         model: None,
                         plan_model: Some(model_for_action.clone()),
                         explore_model: None,
+                        subagent_model: None,
                         effort: None,
                         plan_effort: Some(effort_for_action),
                         explore_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                     tx.send(AppEvent::UpdatePlanModel(model_for_action.clone()));
@@ -2912,9 +2949,11 @@ impl ChatWidget {
                         model: None,
                         plan_model: None,
                         explore_model: Some(model_for_action.clone()),
+                        subagent_model: None,
                         effort: None,
                         plan_effort: None,
                         explore_effort: Some(effort_for_action),
+                        subagent_effort: None,
                         summary: None,
                     }));
                     tx.send(AppEvent::UpdateExploreModel(model_for_action.clone()));
@@ -2925,6 +2964,33 @@ impl ChatWidget {
                     });
                     tracing::info!(
                         "Selected explore model: {}, Selected effort: {}",
+                        model_for_action,
+                        effort_label
+                    );
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: None,
+                        explore_model: None,
+                        subagent_model: Some(model_for_action.clone()),
+                        effort: None,
+                        plan_effort: None,
+                        explore_effort: None,
+                        subagent_effort: Some(effort_for_action),
+                        summary: None,
+                    }));
+                    tx.send(AppEvent::UpdateSubagentModel(model_for_action.clone()));
+                    tx.send(AppEvent::UpdateSubagentReasoningEffort(effort_for_action));
+                    tx.send(AppEvent::PersistSubagentModelSelection {
+                        model: model_for_action.clone(),
+                        effort: effort_for_action,
+                    });
+                    tracing::info!(
+                        "Selected subagent model: {}, Selected effort: {}",
                         model_for_action,
                         effort_label
                     );
@@ -3013,6 +3079,9 @@ impl ChatWidget {
                 .as_deref()
                 .or(self.config.plan_model.as_deref())
                 .unwrap_or(chat_model),
+            crate::app_event::ModelPickerTarget::Subagent => {
+                self.config.subagent_model.as_deref().unwrap_or(chat_model)
+            }
         };
         let is_current_model = effective_current_model == preset.model;
         let highlight_choice = if is_current_model {
@@ -3030,6 +3099,13 @@ impl ChatWidget {
                         self.config.explore_model_reasoning_effort
                     } else if self.config.plan_model.as_deref() == Some(preset.model.as_str()) {
                         self.config.plan_model_reasoning_effort
+                    } else {
+                        self.config.model_reasoning_effort
+                    }
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    if self.config.subagent_model.as_deref() == Some(preset.model.as_str()) {
+                        self.config.subagent_model_reasoning_effort
                     } else {
                         self.config.model_reasoning_effort
                     }
@@ -3134,9 +3210,11 @@ impl ChatWidget {
                         model: Some(model.clone()),
                         plan_model: None,
                         explore_model: None,
+                        subagent_model: None,
                         effort: Some(effort),
                         plan_effort: None,
                         explore_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                 self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
@@ -3161,9 +3239,11 @@ impl ChatWidget {
                         model: None,
                         plan_model: Some(model.clone()),
                         explore_model: None,
+                        subagent_model: None,
                         effort: None,
                         plan_effort: Some(effort),
                         explore_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                 self.app_event_tx
@@ -3189,9 +3269,11 @@ impl ChatWidget {
                         model: None,
                         plan_model: None,
                         explore_model: Some(model.clone()),
+                        subagent_model: None,
                         effort: None,
                         plan_effort: None,
                         explore_effort: Some(effort),
+                        subagent_effort: None,
                         summary: None,
                     }));
                 self.app_event_tx
@@ -3205,6 +3287,37 @@ impl ChatWidget {
                     });
                 tracing::info!(
                     "Selected explore model: {}, Selected effort: {}",
+                    model,
+                    effort_label
+                );
+            }
+            crate::app_event::ModelPickerTarget::Subagent => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: None,
+                        explore_model: None,
+                        subagent_model: Some(model.clone()),
+                        effort: None,
+                        plan_effort: None,
+                        explore_effort: None,
+                        subagent_effort: Some(effort),
+                        summary: None,
+                    }));
+                self.app_event_tx
+                    .send(AppEvent::UpdateSubagentModel(model.clone()));
+                self.app_event_tx
+                    .send(AppEvent::UpdateSubagentReasoningEffort(effort));
+                self.app_event_tx
+                    .send(AppEvent::PersistSubagentModelSelection {
+                        model: model.clone(),
+                        effort,
+                    });
+                tracing::info!(
+                    "Selected subagent model: {}, Selected effort: {}",
                     model,
                     effort_label
                 );
@@ -3302,9 +3415,11 @@ impl ChatWidget {
                 model: None,
                 plan_model: None,
                 explore_model: None,
+                subagent_model: None,
                 effort: None,
                 plan_effort: None,
                 explore_effort: None,
+                subagent_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
@@ -3675,6 +3790,11 @@ impl ChatWidget {
         self.config.explore_model_reasoning_effort = effort;
     }
 
+    /// Set the subagent reasoning effort in the widget's config copy.
+    pub(crate) fn set_subagent_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
+        self.config.subagent_model_reasoning_effort = effort;
+    }
+
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str, model_family: ModelFamily) {
         self.session_header.set_model(model);
@@ -3689,6 +3809,11 @@ impl ChatWidget {
     /// Set the explore model in the widget's config copy.
     pub(crate) fn set_explore_model(&mut self, model: &str) {
         self.config.explore_model = Some(model.to_string());
+    }
+
+    /// Set the subagent model in the widget's config copy.
+    pub(crate) fn set_subagent_model(&mut self, model: &str) {
+        self.config.subagent_model = Some(model.to_string());
     }
 
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {

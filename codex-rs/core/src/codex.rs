@@ -272,6 +272,8 @@ impl Codex {
             plan_model_reasoning_effort: config.plan_model_reasoning_effort,
             explore_model: config.explore_model.clone(),
             explore_model_reasoning_effort: config.explore_model_reasoning_effort,
+            subagent_model: config.subagent_model.clone(),
+            subagent_model_reasoning_effort: config.subagent_model_reasoning_effort,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             base_instructions: config.base_instructions.clone(),
@@ -380,6 +382,8 @@ pub(crate) struct TurnContext {
     pub(crate) plan_reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) explore_model: Option<String>,
     pub(crate) explore_reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) subagent_model: Option<String>,
+    pub(crate) subagent_reasoning_effort: Option<ReasoningEffortConfig>,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
@@ -433,6 +437,10 @@ pub(crate) struct SessionConfiguration {
     explore_model: Option<String>,
     explore_model_reasoning_effort: Option<ReasoningEffortConfig>,
 
+    /// Optional model slug override used for ordinary spawned subagents (the `spawn_subagent` tool flow).
+    subagent_model: Option<String>,
+    subagent_model_reasoning_effort: Option<ReasoningEffortConfig>,
+
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
 
@@ -480,6 +488,9 @@ impl SessionConfiguration {
         if let Some(explore_model) = updates.explore_model.clone() {
             next_configuration.explore_model = Some(explore_model);
         }
+        if let Some(subagent_model) = updates.subagent_model.clone() {
+            next_configuration.subagent_model = Some(subagent_model);
+        }
         if let Some(effort) = updates.reasoning_effort {
             next_configuration.model_reasoning_effort = effort;
         }
@@ -488,6 +499,9 @@ impl SessionConfiguration {
         }
         if let Some(effort) = updates.explore_reasoning_effort {
             next_configuration.explore_model_reasoning_effort = effort;
+        }
+        if let Some(effort) = updates.subagent_reasoning_effort {
+            next_configuration.subagent_model_reasoning_effort = effort;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
@@ -513,9 +527,11 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) model: Option<String>,
     pub(crate) plan_model: Option<String>,
     pub(crate) explore_model: Option<String>,
+    pub(crate) subagent_model: Option<String>,
     pub(crate) reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) plan_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) explore_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
+    pub(crate) subagent_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
 }
@@ -574,6 +590,8 @@ impl Session {
             plan_reasoning_effort: session_configuration.plan_model_reasoning_effort,
             explore_model: session_configuration.explore_model.clone(),
             explore_reasoning_effort: session_configuration.explore_model_reasoning_effort,
+            subagent_model: session_configuration.subagent_model.clone(),
+            subagent_reasoning_effort: session_configuration.subagent_model_reasoning_effort,
             cwd: session_configuration.cwd.clone(),
             developer_instructions: match session_configuration.session_source {
                 SessionSource::Cli | SessionSource::VSCode => {
@@ -1914,9 +1932,11 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 model,
                 plan_model,
                 explore_model,
+                subagent_model,
                 effort,
                 plan_effort,
                 explore_effort,
+                subagent_effort,
                 summary,
             } => {
                 handlers::override_turn_context(
@@ -1929,9 +1949,11 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         model,
                         plan_model,
                         explore_model,
+                        subagent_model,
                         reasoning_effort: effort,
                         plan_reasoning_effort: plan_effort,
                         explore_reasoning_effort: explore_effort,
+                        subagent_reasoning_effort: subagent_effort,
                         reasoning_summary: summary,
                         ..Default::default()
                     },
@@ -2098,9 +2120,11 @@ mod handlers {
                     model: Some(model),
                     plan_model: None,
                     explore_model: None,
+                    subagent_model: None,
                     reasoning_effort: Some(effort),
                     plan_reasoning_effort: None,
                     explore_reasoning_effort: None,
+                    subagent_reasoning_effort: None,
                     reasoning_summary: Some(summary),
                     final_output_json_schema: Some(final_output_json_schema),
                 },
@@ -2524,6 +2548,8 @@ async fn spawn_review_thread(
         plan_reasoning_effort: parent_turn_context.plan_reasoning_effort,
         explore_model: parent_turn_context.explore_model.clone(),
         explore_reasoning_effort: parent_turn_context.explore_reasoning_effort,
+        subagent_model: parent_turn_context.subagent_model.clone(),
+        subagent_reasoning_effort: parent_turn_context.subagent_reasoning_effort,
         tools_config,
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
@@ -3269,6 +3295,8 @@ mod tests {
             plan_model_reasoning_effort: None,
             explore_model: None,
             explore_model_reasoning_effort: None,
+            subagent_model: None,
+            subagent_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3340,6 +3368,8 @@ mod tests {
             plan_model_reasoning_effort: None,
             explore_model: None,
             explore_model_reasoning_effort: None,
+            subagent_model: None,
+            subagent_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3551,6 +3581,8 @@ mod tests {
             plan_model_reasoning_effort: None,
             explore_model: None,
             explore_model_reasoning_effort: None,
+            subagent_model: None,
+            subagent_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3642,6 +3674,8 @@ mod tests {
             plan_model_reasoning_effort: None,
             explore_model: None,
             explore_model_reasoning_effort: None,
+            subagent_model: None,
+            subagent_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),

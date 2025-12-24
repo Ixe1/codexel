@@ -2743,9 +2743,11 @@ impl CodexMessageProcessor {
                     model: params.model,
                     plan_model: None,
                     explore_model: None,
+                    subagent_model: None,
                     effort: params.effort.map(Some),
                     plan_effort: None,
                     explore_effort: None,
+                    subagent_effort: None,
                     summary: params.summary,
                 })
                 .await;

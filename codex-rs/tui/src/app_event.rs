@@ -20,6 +20,7 @@ pub(crate) enum ModelPickerTarget {
     Chat,
     Plan,
     Explore,
+    Subagent,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -87,6 +88,12 @@ pub(crate) enum AppEvent {
     /// Update the current explore reasoning effort in the running app and widget.
     UpdateExploreReasoningEffort(Option<ReasoningEffort>),
 
+    /// Update the current subagent model slug in the running app and widget.
+    UpdateSubagentModel(String),
+
+    /// Update the current subagent reasoning effort in the running app and widget.
+    UpdateSubagentReasoningEffort(Option<ReasoningEffort>),
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,
@@ -101,6 +108,12 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected explore model and reasoning effort to the appropriate config.
     PersistExploreModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Persist the selected subagent model and reasoning effort to the appropriate config.
+    PersistSubagentModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
     },

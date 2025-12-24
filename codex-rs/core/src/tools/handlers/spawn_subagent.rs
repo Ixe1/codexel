@@ -115,8 +115,14 @@ impl ToolHandler for SpawnSubagentHandler {
         cfg.developer_instructions = Some(build_subagent_developer_instructions(
             cfg.developer_instructions.as_deref().unwrap_or_default(),
         ));
-        cfg.model = Some(turn.client.get_model());
-        cfg.model_reasoning_effort = turn.client.get_reasoning_effort();
+        cfg.model = Some(
+            turn.subagent_model
+                .clone()
+                .unwrap_or_else(|| turn.client.get_model()),
+        );
+        cfg.model_reasoning_effort = turn
+            .subagent_reasoning_effort
+            .or(turn.client.get_reasoning_effort());
         cfg.model_reasoning_summary = turn.client.get_reasoning_summary();
 
         let mut features = cfg.features.clone();

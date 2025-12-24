@@ -782,6 +782,14 @@ impl App {
                 self.config.explore_model_reasoning_effort = effort;
                 self.chat_widget.set_explore_reasoning_effort(effort);
             }
+            AppEvent::UpdateSubagentModel(model) => {
+                self.config.subagent_model = Some(model.clone());
+                self.chat_widget.set_subagent_model(&model);
+            }
+            AppEvent::UpdateSubagentReasoningEffort(effort) => {
+                self.config.subagent_model_reasoning_effort = effort;
+                self.chat_widget.set_subagent_reasoning_effort(effort);
+            }
             AppEvent::OpenReasoningPopup { model, target } => {
                 self.chat_widget.open_reasoning_popup(target, model);
             }
@@ -850,9 +858,11 @@ impl App {
                                         model: None,
                                         plan_model: None,
                                         explore_model: None,
+                                        subagent_model: None,
                                         effort: None,
                                         plan_effort: None,
                                         explore_effort: None,
+                                        subagent_effort: None,
                                         summary: None,
                                     },
                                 ));
@@ -992,6 +1002,45 @@ impl App {
                         } else {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to save default explore model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistSubagentModelSelection { model, effort } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_subagent_model(Some(model.as_str()), effort)
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        let mut message = format!("Subagent model changed to {model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                            message.push(' ');
+                            message.push_str(label);
+                        }
+                        message.push_str(" (used for spawned subagents)");
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist subagent model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save subagent model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default subagent model: {err}"
                             ));
                         }
                     }

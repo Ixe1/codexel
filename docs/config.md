@@ -86,6 +86,15 @@ Optional model to use for `/plan` exploration subagents. When unset, exploration
 explore_model = "gpt-5.1-mini"
 ```
 
+### subagent_model
+
+Optional model to use for spawned subagents (the `spawn_subagent` tool flow). When unset, spawned subagents inherit the active model for that turn.
+
+```toml
+# Use a cheaper model for general subagents without changing the main chat model.
+subagent_model = "gpt-5.1-mini"
+```
+
 ### model_providers
 
 This option lets you add to the default set of model providers bundled with Codex. The map key becomes the value you use with `model_provider` to select the provider.
@@ -227,6 +236,10 @@ Optional reasoning effort to use for planning flows such as `/plan`. When unset,
 ### explore_model_reasoning_effort
 
 Optional reasoning effort to use for `/plan` exploration subagents. When unset, exploration inherits the reasoning effort for that turn.
+
+### subagent_model_reasoning_effort
+
+Optional reasoning effort to use for spawned subagents (the `spawn_subagent` tool flow). When unset, spawned subagents inherit the reasoning effort for that turn.
 
 ### model_reasoning_summary
 
@@ -1011,6 +1024,8 @@ Valid values:
 | `plan_model_reasoning_effort`                    | `minimal` \| `low` \| `medium` \| `high`\|`xhigh`                 | Optional reasoning effort for planning flows (defaults to `model_reasoning_effort`).                                            |
 | `explore_model`                                  | string                                                            | Optional model for `/plan` exploration subagents (defaults to the active model for that turn).                                  |
 | `explore_model_reasoning_effort`                 | `minimal` \| `low` \| `medium` \| `high`\|`xhigh`                 | Optional reasoning effort for `/plan` exploration subagents (defaults to the active effort for that turn).                      |
+| `subagent_model`                                 | string                                                            | Optional model for spawned subagents (defaults to the active model for that turn).                                              |
+| `subagent_model_reasoning_effort`                | `minimal` \| `low` \| `medium` \| `high`\|`xhigh`                 | Optional reasoning effort for spawned subagents (defaults to the active effort for that turn).                                  |
 | `model_reasoning_summary`                        | `auto` \| `concise` \| `detailed` \| `none`                       | Reasoning summaries.                                                                                                            |
 | `model_verbosity`                                | `low` \| `medium` \| `high`                                       | GPT‑5 text verbosity (Responses API).                                                                                           |
 | `model_supports_reasoning_summaries`             | boolean                                                           | Force‑enable reasoning summaries.                                                                                               |

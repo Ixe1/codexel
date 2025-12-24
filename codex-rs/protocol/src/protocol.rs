@@ -152,6 +152,12 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         explore_model: Option<String>,
 
+        /// Updated model slug used for ordinary spawned subagents (the `spawn_subagent` tool flow).
+        ///
+        /// When omitted, spawned subagents use the active model for that turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_model: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
@@ -172,6 +178,13 @@ pub enum Op {
         /// the effort, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
         explore_effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for ordinary spawned subagents (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_effort: Option<Option<ReasoningEffortConfig>>,
 
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
