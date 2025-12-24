@@ -243,6 +243,7 @@ impl Session {
 
         let event = EventMsg::TurnAborted(TurnAbortedEvent { reason });
         self.send_event(task.turn_context.as_ref(), event).await;
+        self.flush_rollout().await;
     }
 }
 

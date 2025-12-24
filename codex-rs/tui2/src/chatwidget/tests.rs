@@ -239,6 +239,63 @@ async fn resumed_session_does_not_auto_execute_plan() {
     );
 }
 
+#[tokio::test]
+async fn resumed_interrupted_session_prompts_before_continuing() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".to_string(),
+                images: None,
+            }),
+            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "partial".to_string(),
+            }),
+            EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
+                reason: codex_core::protocol::TurnAbortReason::Interrupted,
+            }),
+        ]),
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(
+        !chat.bottom_pane.is_normal_backtrack_mode(),
+        "expected resume prompt overlay to be active"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+
+    let mut continue_text = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::QueueUserText(text) = ev {
+            continue_text = Some(text);
+            break;
+        }
+    }
+
+    assert_eq!(
+        continue_text.expect("expected QueueUserText from resume prompt"),
+        "Continue from where you left off. Do not re-run tool calls that already completed; use the outputs above. If you need to rerun a tool, ask first."
+    );
+}
+
 /// Entering review mode uses the hint provided by the review request.
 #[tokio::test]
 async fn entered_review_mode_uses_request_hint() {
@@ -488,6 +545,9 @@ async fn make_chatwidget_manual(
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
+        resume_last_turn_aborted: false,
+        resume_had_partial_output: false,
+        resume_had_in_progress_tools: false,
         pending_notification: None,
         is_review_mode: false,
         pre_review_token_info: None,

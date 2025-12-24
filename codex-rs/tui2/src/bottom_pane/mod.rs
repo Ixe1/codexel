@@ -32,6 +32,7 @@ mod list_selection_view;
 mod plan_approval_overlay;
 mod plan_request_overlay;
 mod prompt_args;
+mod resume_prompt_overlay;
 mod skill_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
 mod feedback_view;
@@ -61,6 +62,7 @@ pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
 pub(crate) use plan_approval_overlay::PlanApprovalOverlay;
 pub(crate) use plan_request_overlay::PlanRequestOverlay;
+pub(crate) use resume_prompt_overlay::ResumePromptOverlay;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane {
