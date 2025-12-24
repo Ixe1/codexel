@@ -1615,6 +1615,14 @@ impl App {
                 self.config.plan_model_reasoning_effort = effort;
                 self.chat_widget.set_plan_reasoning_effort(effort);
             }
+            AppEvent::UpdateExploreModel(model) => {
+                self.config.explore_model = Some(model.clone());
+                self.chat_widget.set_explore_model(&model);
+            }
+            AppEvent::UpdateExploreReasoningEffort(effort) => {
+                self.config.explore_model_reasoning_effort = effort;
+                self.chat_widget.set_explore_reasoning_effort(effort);
+            }
             AppEvent::OpenReasoningPopup { model, target } => {
                 self.chat_widget.open_reasoning_popup(target, model);
             }
@@ -1682,8 +1690,10 @@ impl App {
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         model: None,
                                         plan_model: None,
+                                        explore_model: None,
                                         effort: None,
                                         plan_effort: None,
+                                        explore_effort: None,
                                         summary: None,
                                     },
                                 ));
@@ -1784,6 +1794,45 @@ impl App {
                         } else {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to save default plan model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistExploreModelSelection { model, effort } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_explore_model(Some(model.as_str()), effort)
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        let mut message = format!("Explore model changed to {model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                            message.push(' ');
+                            message.push_str(label);
+                        }
+                        message.push_str(" (used for /plan exploration)");
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist explore model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save explore model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default explore model: {err}"
                             ));
                         }
                     }

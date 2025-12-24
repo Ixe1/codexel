@@ -19,6 +19,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 pub(crate) enum ModelPickerTarget {
     Chat,
     Plan,
+    Explore,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -76,6 +77,12 @@ pub(crate) enum AppEvent {
     /// Update the current plan reasoning effort in the running app and widget.
     UpdatePlanReasoningEffort(Option<ReasoningEffort>),
 
+    /// Update the current explore model slug in the running app and widget.
+    UpdateExploreModel(String),
+
+    /// Update the current explore reasoning effort in the running app and widget.
+    UpdateExploreReasoningEffort(Option<ReasoningEffort>),
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,
@@ -84,6 +91,12 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected plan model and reasoning effort to the appropriate config.
     PersistPlanModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Persist the selected explore model and reasoning effort to the appropriate config.
+    PersistExploreModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
     },

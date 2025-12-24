@@ -33,6 +33,7 @@ use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::SubAgentInvocation;
+use codex_core::protocol::SubAgentToolCallOutcome;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::openai_models::ReasoningSummaryFormat;
 use codex_protocol::plan_tool::PlanItemArg;
@@ -1264,6 +1265,7 @@ pub(crate) struct SubAgentToolCallCell {
     duration: Option<Duration>,
     activity: Option<String>,
     tokens: Option<i64>,
+    outcome: Option<SubAgentToolCallOutcome>,
     result: Option<Result<String, String>>,
 }
 
@@ -1276,6 +1278,7 @@ impl SubAgentToolCallCell {
             duration: None,
             activity: None,
             tokens: None,
+            outcome: None,
             result: None,
         }
     }
@@ -1288,10 +1291,12 @@ impl SubAgentToolCallCell {
         &mut self,
         duration: Duration,
         tokens: Option<i64>,
+        outcome: Option<SubAgentToolCallOutcome>,
         result: Result<String, String>,
     ) {
         self.duration = Some(duration);
         self.tokens = tokens;
+        self.outcome = outcome;
         self.result = Some(result);
     }
 
@@ -1320,6 +1325,7 @@ impl SubAgentToolCallCell {
         let elapsed = self.start_time.elapsed();
         self.duration = Some(elapsed);
         self.tokens = None;
+        self.outcome = Some(SubAgentToolCallOutcome::Cancelled);
         self.result = Some(Err("interrupted".to_string()));
     }
 }
@@ -1328,6 +1334,7 @@ impl HistoryCell for SubAgentToolCallCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let status = self.success();
         let indicator = match status {
+            _ if self.outcome == Some(SubAgentToolCallOutcome::Cancelled) => "⏹".dim(),
             Some(true) => "✓".green(),
             Some(false) => "✗".red(),
             None => "●".cyan(),
@@ -1357,6 +1364,7 @@ impl HistoryCell for SubAgentToolCallCell {
         let activity = self.activity.as_deref().unwrap_or("working…");
         let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
         let detail_span = match &self.result {
+            _ if self.outcome == Some(SubAgentToolCallOutcome::Cancelled) => "cancelled".dim(),
             Some(Ok(_)) => "done".dim(),
             Some(Err(_)) => "failed".red(),
             None => activity.to_string().dim(),
@@ -1444,6 +1452,7 @@ impl SubAgentToolCallGroupCell {
         call_id: &str,
         duration: Duration,
         tokens: Option<i64>,
+        outcome: Option<SubAgentToolCallOutcome>,
         result: Result<String, String>,
     ) -> bool {
         match self
@@ -1453,7 +1462,7 @@ impl SubAgentToolCallGroupCell {
             .find(|cell| cell.call_id() == call_id)
         {
             Some(cell) => {
-                cell.complete(duration, tokens, result);
+                cell.complete(duration, tokens, outcome, result);
                 true
             }
             None => false,

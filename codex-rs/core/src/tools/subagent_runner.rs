@@ -5,6 +5,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::SubAgentToolCallActivityEvent;
 use codex_protocol::protocol::SubAgentToolCallBeginEvent;
 use codex_protocol::protocol::SubAgentToolCallEndEvent;
+use codex_protocol::protocol::SubAgentToolCallOutcome;
 use codex_protocol::protocol::SubAgentToolCallTokensEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::user_input::UserInput;
@@ -76,6 +77,7 @@ pub(crate) async fn run_subagent_tool_call(
                         invocation,
                         duration: started_at.elapsed(),
                         tokens: None,
+                        outcome: Some(SubAgentToolCallOutcome::Completed),
                         result: Err(message.clone()),
                     }),
                 )
@@ -89,6 +91,7 @@ pub(crate) async fn run_subagent_tool_call(
     let mut tokens: i64 = 0;
     let mut last_reported_tokens: Option<i64> = None;
     let mut last_reported_at = Instant::now();
+    let mut aborted = false;
 
     while let Ok(Event { msg, .. }) = io.rx_event.recv().await {
         if let Some(activity) = activity_for_event(&msg)
@@ -111,7 +114,10 @@ pub(crate) async fn run_subagent_tool_call(
                 last_agent_message = ev.last_agent_message;
                 break;
             }
-            EventMsg::TurnAborted(_) => break,
+            EventMsg::TurnAborted(_) => {
+                aborted = true;
+                break;
+            }
             EventMsg::TokenCount(TokenCountEvent {
                 info: Some(info), ..
             }) => {
@@ -143,6 +149,24 @@ pub(crate) async fn run_subagent_tool_call(
     let response = last_agent_message.unwrap_or_default().trim().to_string();
     let tokens = if tokens > 0 { Some(tokens) } else { None };
 
+    if aborted {
+        let message = "cancelled".to_string();
+        session
+            .send_event(
+                turn.as_ref(),
+                EventMsg::SubAgentToolCallEnd(SubAgentToolCallEndEvent {
+                    call_id,
+                    invocation,
+                    duration: started_at.elapsed(),
+                    tokens: None,
+                    outcome: Some(SubAgentToolCallOutcome::Cancelled),
+                    result: Err(message.clone()),
+                }),
+            )
+            .await;
+        return Err(message);
+    }
+
     session
         .send_event(
             turn.as_ref(),
@@ -151,6 +175,7 @@ pub(crate) async fn run_subagent_tool_call(
                 invocation,
                 duration: started_at.elapsed(),
                 tokens,
+                outcome: Some(SubAgentToolCallOutcome::Completed),
                 result: Ok(response.clone()),
             }),
         )

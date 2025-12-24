@@ -24,6 +24,9 @@ model = "gpt-5.1-codex-max"
 # Optional model used for `/plan` (defaults to `model` when unset).
 # plan_model = "gpt-5.1-codex"
 
+# Optional model used for `/plan` exploration subagents (defaults to the active model for that turn).
+# explore_model = "gpt-5.1-mini"
+
 # Model used by the /review feature (code reviews). Default: "gpt-5.1-codex-max".
 review_model = "gpt-5.1-codex-max"
 
@@ -45,6 +48,9 @@ model_reasoning_effort = "medium"
 
 # Optional reasoning effort for `/plan` (defaults to `model_reasoning_effort` when unset).
 # plan_model_reasoning_effort = "medium"
+
+# Optional reasoning effort for `/plan` exploration subagents (defaults to the active effort for that turn).
+# explore_model_reasoning_effort = "medium"
 
 # Reasoning summary: auto | concise | detailed | none (default: auto)
 model_reasoning_summary = "auto"

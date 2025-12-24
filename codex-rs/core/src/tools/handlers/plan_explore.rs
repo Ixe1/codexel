@@ -76,8 +76,15 @@ async fn run_one_explorer(
     // Keep this prompt focused and small; avoid inheriting large caller developer instructions.
     cfg.developer_instructions = Some(format!("{PLAN_EXPLORE_PROMPT}\n\nFocus:\n- {focus}\n"));
 
-    cfg.model = Some(parent_ctx.client.get_model());
-    cfg.model_reasoning_effort = parent_ctx.client.get_reasoning_effort();
+    cfg.model = Some(
+        parent_ctx
+            .explore_model
+            .clone()
+            .unwrap_or_else(|| parent_ctx.client.get_model()),
+    );
+    cfg.model_reasoning_effort = parent_ctx
+        .explore_reasoning_effort
+        .or(parent_ctx.client.get_reasoning_effort());
     cfg.model_reasoning_summary = parent_ctx.client.get_reasoning_summary();
 
     let mut features = cfg.features.clone();

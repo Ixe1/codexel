@@ -238,6 +238,9 @@ impl Session {
             .abort(session_ctx, Arc::clone(&task.turn_context))
             .await;
 
+        self.cancel_active_subagent_tool_calls(task.turn_context.as_ref())
+            .await;
+
         let event = EventMsg::TurnAborted(TurnAbortedEvent { reason });
         self.send_event(task.turn_context.as_ref(), event).await;
     }

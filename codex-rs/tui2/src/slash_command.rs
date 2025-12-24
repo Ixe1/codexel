@@ -14,6 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     PlanModel,
+    ExploreModel,
     Approvals,
     Skills,
     Review,
@@ -54,6 +55,9 @@ impl SlashCommand {
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
+            SlashCommand::ExploreModel => {
+                "choose what model and reasoning effort to use for /plan exploration"
+            }
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
@@ -78,6 +82,7 @@ impl SlashCommand {
             | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::PlanModel
+            | SlashCommand::ExploreModel
             | SlashCommand::Approvals
             | SlashCommand::Review
             | SlashCommand::Plan

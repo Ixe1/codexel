@@ -146,6 +146,12 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_model: Option<String>,
 
+        /// Updated model slug used for exploration flows (e.g. `/plan` exploration subagents).
+        ///
+        /// When omitted, exploration flows use the active model for that turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        explore_model: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
@@ -159,6 +165,13 @@ pub enum Op {
         /// the effort, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for exploration flows (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        explore_effort: Option<Option<ReasoningEffortConfig>>,
 
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1184,6 +1197,13 @@ pub struct SubAgentInvocation {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentToolCallOutcome {
+    Completed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
 pub struct McpToolCallBeginEvent {
     /// Identifier so this can be paired with the McpToolCallEnd event.
@@ -1245,6 +1265,10 @@ pub struct SubAgentToolCallEndEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tokens: Option<i64>,
+    /// Outcome of the subagent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub outcome: Option<SubAgentToolCallOutcome>,
     /// Result of the subagent call. Note this could be an error.
     pub result: Result<String, String>,
 }

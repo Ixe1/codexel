@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::AuthManager;
 use crate::SandboxState;
@@ -269,6 +270,8 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             plan_model: config.plan_model.clone(),
             plan_model_reasoning_effort: config.plan_model_reasoning_effort,
+            explore_model: config.explore_model.clone(),
+            explore_model_reasoning_effort: config.explore_model_reasoning_effort,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             base_instructions: config.base_instructions.clone(),
@@ -359,6 +362,13 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
     next_internal_sub_id: AtomicU64,
+    active_subagent_tool_calls: Mutex<HashMap<String, HashMap<String, ActiveSubAgentToolCall>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveSubAgentToolCall {
+    invocation: crate::protocol::SubAgentInvocation,
+    started_at: Instant,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -368,6 +378,8 @@ pub(crate) struct TurnContext {
     pub(crate) client: ModelClient,
     pub(crate) plan_model: Option<String>,
     pub(crate) plan_reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) explore_model: Option<String>,
+    pub(crate) explore_reasoning_effort: Option<ReasoningEffortConfig>,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
@@ -417,6 +429,10 @@ pub(crate) struct SessionConfiguration {
     plan_model: Option<String>,
     plan_model_reasoning_effort: Option<ReasoningEffortConfig>,
 
+    /// Optional model slug override used for exploration flows (e.g. `/plan` exploration subagents).
+    explore_model: Option<String>,
+    explore_model_reasoning_effort: Option<ReasoningEffortConfig>,
+
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
 
@@ -461,11 +477,17 @@ impl SessionConfiguration {
         if let Some(plan_model) = updates.plan_model.clone() {
             next_configuration.plan_model = Some(plan_model);
         }
+        if let Some(explore_model) = updates.explore_model.clone() {
+            next_configuration.explore_model = Some(explore_model);
+        }
         if let Some(effort) = updates.reasoning_effort {
             next_configuration.model_reasoning_effort = effort;
         }
         if let Some(effort) = updates.plan_reasoning_effort {
             next_configuration.plan_model_reasoning_effort = effort;
+        }
+        if let Some(effort) = updates.explore_reasoning_effort {
+            next_configuration.explore_model_reasoning_effort = effort;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
@@ -490,8 +512,10 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) model: Option<String>,
     pub(crate) plan_model: Option<String>,
+    pub(crate) explore_model: Option<String>,
     pub(crate) reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) plan_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
+    pub(crate) explore_reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
 }
@@ -548,6 +572,8 @@ impl Session {
             client,
             plan_model: session_configuration.plan_model.clone(),
             plan_reasoning_effort: session_configuration.plan_model_reasoning_effort,
+            explore_model: session_configuration.explore_model.clone(),
+            explore_reasoning_effort: session_configuration.explore_model_reasoning_effort,
             cwd: session_configuration.cwd.clone(),
             developer_instructions: match session_configuration.session_source {
                 SessionSource::Cli | SessionSource::VSCode => {
@@ -735,6 +761,7 @@ impl Session {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            active_subagent_tool_calls: Mutex::new(HashMap::new()),
         });
 
         // Dispatch the SessionConfiguredEvent first and then report any errors.
@@ -1058,6 +1085,8 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.track_subagent_tool_calls(&turn_context.sub_id, &msg)
+            .await;
         let legacy_source = msg.clone();
         let event = Event {
             id: turn_context.sub_id.clone(),
@@ -1815,6 +1844,56 @@ impl Session {
     async fn cancel_mcp_startup(&self) {
         self.services.mcp_startup_cancellation_token.cancel();
     }
+
+    async fn track_subagent_tool_calls(&self, turn_id: &str, msg: &EventMsg) {
+        match msg {
+            EventMsg::SubAgentToolCallBegin(ev) => {
+                let mut calls_by_turn = self.active_subagent_tool_calls.lock().await;
+                let calls = calls_by_turn.entry(turn_id.to_string()).or_default();
+                calls.insert(
+                    ev.call_id.clone(),
+                    ActiveSubAgentToolCall {
+                        invocation: ev.invocation.clone(),
+                        started_at: Instant::now(),
+                    },
+                );
+            }
+            EventMsg::SubAgentToolCallEnd(ev) => {
+                let mut calls_by_turn = self.active_subagent_tool_calls.lock().await;
+                if let Some(calls) = calls_by_turn.get_mut(turn_id) {
+                    calls.remove(&ev.call_id);
+                    if calls.is_empty() {
+                        calls_by_turn.remove(turn_id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) async fn cancel_active_subagent_tool_calls(&self, turn_context: &TurnContext) {
+        let calls = {
+            let mut calls_by_turn = self.active_subagent_tool_calls.lock().await;
+            calls_by_turn
+                .remove(&turn_context.sub_id)
+                .unwrap_or_default()
+        };
+
+        for (call_id, call) in calls {
+            self.send_event(
+                turn_context,
+                EventMsg::SubAgentToolCallEnd(crate::protocol::SubAgentToolCallEndEvent {
+                    call_id,
+                    invocation: call.invocation,
+                    duration: call.started_at.elapsed(),
+                    tokens: None,
+                    outcome: Some(crate::protocol::SubAgentToolCallOutcome::Cancelled),
+                    result: Err("cancelled".to_string()),
+                }),
+            )
+            .await;
+        }
+    }
 }
 
 async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {
@@ -1834,8 +1913,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 sandbox_policy,
                 model,
                 plan_model,
+                explore_model,
                 effort,
                 plan_effort,
+                explore_effort,
                 summary,
             } => {
                 handlers::override_turn_context(
@@ -1847,8 +1928,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         sandbox_policy,
                         model,
                         plan_model,
+                        explore_model,
                         reasoning_effort: effort,
                         plan_reasoning_effort: plan_effort,
+                        explore_reasoning_effort: explore_effort,
                         reasoning_summary: summary,
                         ..Default::default()
                     },
@@ -2014,8 +2097,10 @@ mod handlers {
                     sandbox_policy: Some(sandbox_policy),
                     model: Some(model),
                     plan_model: None,
+                    explore_model: None,
                     reasoning_effort: Some(effort),
                     plan_reasoning_effort: None,
+                    explore_reasoning_effort: None,
                     reasoning_summary: Some(summary),
                     final_output_json_schema: Some(final_output_json_schema),
                 },
@@ -2437,6 +2522,8 @@ async fn spawn_review_thread(
         client,
         plan_model: parent_turn_context.plan_model.clone(),
         plan_reasoning_effort: parent_turn_context.plan_reasoning_effort,
+        explore_model: parent_turn_context.explore_model.clone(),
+        explore_reasoning_effort: parent_turn_context.explore_reasoning_effort,
         tools_config,
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         developer_instructions: None,
@@ -3124,6 +3211,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_active_subagent_tool_calls_emits_cancelled_end_event() {
+        let (session, turn_context, rx_event) = make_session_and_context_with_rx().await;
+
+        let invocation = crate::protocol::SubAgentInvocation {
+            description: "Test subagent".to_string(),
+            label: "test_subagent".to_string(),
+            prompt: "noop".to_string(),
+        };
+        session
+            .send_event(
+                turn_context.as_ref(),
+                EventMsg::SubAgentToolCallBegin(crate::protocol::SubAgentToolCallBeginEvent {
+                    call_id: "subagent-call-1".to_string(),
+                    invocation,
+                }),
+            )
+            .await;
+
+        session
+            .cancel_active_subagent_tool_calls(turn_context.as_ref())
+            .await;
+
+        let end_event = tokio::time::timeout(StdDuration::from_secs(2), async {
+            loop {
+                let event = rx_event
+                    .recv()
+                    .await
+                    .expect("receive subagent tool call end event");
+                if let EventMsg::SubAgentToolCallEnd(end) = event.msg {
+                    break end;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for subagent tool call end event");
+
+        assert_eq!(
+            end_event.outcome,
+            Some(crate::protocol::SubAgentToolCallOutcome::Cancelled)
+        );
+        assert_eq!(end_event.call_id, "subagent-call-1");
+    }
+
+    #[tokio::test]
     async fn set_rate_limits_retains_previous_credits() {
         let codex_home = tempfile::tempdir().expect("create temp dir");
         let config = build_test_config(codex_home.path()).await;
@@ -3136,6 +3267,8 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             plan_model: None,
             plan_model_reasoning_effort: None,
+            explore_model: None,
+            explore_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3205,6 +3338,8 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             plan_model: None,
             plan_model_reasoning_effort: None,
+            explore_model: None,
+            explore_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3414,6 +3549,8 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             plan_model: None,
             plan_model_reasoning_effort: None,
+            explore_model: None,
+            explore_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3474,6 +3611,7 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            active_subagent_tool_calls: Mutex::new(HashMap::new()),
         };
 
         (session, turn_context)
@@ -3502,6 +3640,8 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             plan_model: None,
             plan_model_reasoning_effort: None,
+            explore_model: None,
+            explore_model_reasoning_effort: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
@@ -3562,6 +3702,7 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            active_subagent_tool_calls: Mutex::new(HashMap::new()),
         });
 
         (session, turn_context, rx_event)
