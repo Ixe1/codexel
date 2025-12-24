@@ -2742,8 +2742,10 @@ impl CodexMessageProcessor {
                     sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
                     model: params.model,
                     plan_model: None,
+                    explore_model: None,
                     effort: params.effort.map(Some),
                     plan_effort: None,
+                    explore_effort: None,
                     summary: params.summary,
                 })
                 .await;
