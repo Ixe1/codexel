@@ -11,11 +11,11 @@ edited between the markers.
 
 ### Highlights
 
-- Plan Mode: `/plan` (and plan variants) can use web search when `web_search_request` is enabled.
-- Plan Mode: refine plan mode and plan-variant prompt guidance.
-- Core: strengthen `ask_user_question` guidance and add a web UI quality bar for planning.
-- CI: harden workflow conditionals and YAML formatting.
-- Packaging: add Homebrew cask workflow and macOS artifacts.
+- Resume: persist interrupted turn history, prompt to continue, and keep resume options usable on small terminals.
+- Agents: add `/explore-model` and cancel spawned subagents on abort.
+- Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
+- Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
+- Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
 
 ### Details
 
@@ -24,18 +24,26 @@ edited between the markers.
 - Fix YAML heredoc indentation
 - Fix rust-ci job if expressions
 - Fix workflows: avoid secrets in if
+- Fix app-server OverrideTurnContext init
 
 #### Documentation
 - docs: keep README ASCII-only
 - docs: prettier
 
+#### TUI
+- tui: update status snapshots for v0.1.4
+- tui: prompt to continue on interrupted resume
+- tui: keep resume options visible on small terminals
+
 #### Core
 - core: strengthen ask_user_question guidance
 - core: add web UI quality bar instructions
+- core: inject SpawnSubagent guidance for exec
 
 #### Plan Mode
 - plan: refine plan mode + variants prompts
 - plan: allow web search in /plan
+- Plan mode: add plan_explore subagent exploration
 
 #### Branding & Packaging
 - codex-cli: bump codexel npm version to 0.1.3
@@ -45,6 +53,10 @@ edited between the markers.
 - Add Homebrew cask workflow and macOS artifacts
 - Use macos-15-intel for x86_64 builds
 - release: bump versions to 0.1.4
+- changelog: update unreleased
+- checkpoint: pre explore-model + cancelled subagents
+- Add /explore-model and cancel subagents on abort
+- Persist interrupted turn history on resume
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
