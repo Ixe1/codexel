@@ -14,6 +14,7 @@ edited between the markers.
 - Resume: persist interrupted turn history, prompt to continue, and keep resume options usable on small terminals.
 - Agents: add `/explore-model` and cancel spawned subagents on abort.
 - Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
+- Plan Mode: switch `/plan` exploration to mini subagents; add `mini_subagent_*` config and deprecate `explore_model*`.
 - Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
 - Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
 
@@ -57,6 +58,9 @@ edited between the markers.
 - checkpoint: pre explore-model + cancelled subagents
 - Add /explore-model and cancel subagents on abort
 - Persist interrupted turn history on resume
+- changelog: update unreleased for v0.1.4
+- Add /subagent-model override
+- Add mini/explorer subagents and UI badges
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20

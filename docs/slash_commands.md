@@ -40,3 +40,4 @@ Control Codex’s behavior during an interactive session with slash commands.
 ### Notes
 
 - After you approve a `/plan`, Codexel saves it to `.codexel/plan.md` under the session's working directory. `.codexel/` is hidden from the agent's built-in file tools.
+- `/explore-model` configures the model/effort used for `/plan` exploration (mini subagents).

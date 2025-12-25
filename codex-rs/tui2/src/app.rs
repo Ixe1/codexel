@@ -1700,10 +1700,12 @@ impl App {
                                         model: None,
                                         plan_model: None,
                                         explore_model: None,
+                                        mini_subagent_model: None,
                                         subagent_model: None,
                                         effort: None,
                                         plan_effort: None,
                                         explore_effort: None,
+                                        mini_subagent_effort: None,
                                         subagent_effort: None,
                                         summary: None,
                                     },
@@ -1814,12 +1816,12 @@ impl App {
                 let profile = self.active_profile.as_deref();
                 match ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_profile(profile)
-                    .set_explore_model(Some(model.as_str()), effort)
+                    .set_mini_subagent_model(Some(model.as_str()), effort)
                     .apply()
                     .await
                 {
                     Ok(()) => {
-                        let mut message = format!("Explore model changed to {model}");
+                        let mut message = format!("Mini subagent model changed to {model}");
                         if let Some(label) = Self::reasoning_label_for(&model, effort) {
                             message.push(' ');
                             message.push_str(label);
@@ -1835,15 +1837,15 @@ impl App {
                     Err(err) => {
                         tracing::error!(
                             error = %err,
-                            "failed to persist explore model selection"
+                            "failed to persist mini subagent model selection"
                         );
                         if let Some(profile) = profile {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save explore model for profile `{profile}`: {err}"
+                                "Failed to save mini subagent model for profile `{profile}`: {err}"
                             ));
                         } else {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save default explore model: {err}"
+                                "Failed to save default mini subagent model: {err}"
                             ));
                         }
                     }

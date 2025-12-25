@@ -118,7 +118,7 @@ pub(crate) const SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnM
 Use `spawn_mini_subagent` for the same kind of short, read-only research as `spawn_subagent`, but when you explicitly want a fast/cheap subagent.
 
 Key properties:
-- This tool always runs on `gpt-5.1-codex-mini`.
+- This tool defaults to `gpt-5.1-codex-mini` (configurable via `mini_subagent_model`).
 - Mini subagents cannot edit files and cannot ask the user questions.
 
 When to use it:

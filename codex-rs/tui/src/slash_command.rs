@@ -60,7 +60,7 @@ impl SlashCommand {
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
             SlashCommand::ExploreModel => {
-                "choose what model and reasoning effort to use for /plan exploration"
+                "choose what model and reasoning effort to use for /plan exploration (mini subagents)"
             }
             SlashCommand::SubagentModel => {
                 "choose what model and reasoning effort to use for spawned subagents"

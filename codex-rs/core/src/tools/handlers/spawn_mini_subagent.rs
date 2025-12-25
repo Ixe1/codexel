@@ -17,7 +17,7 @@ use crate::tools::registry::ToolKind;
 pub(crate) const SPAWN_MINI_SUBAGENT_TOOL_NAME: &str = "spawn_mini_subagent";
 pub(crate) const SPAWN_MINI_SUBAGENT_LABEL_PREFIX: &str = "spawn_mini_subagent";
 
-const MINI_SUBAGENT_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
+pub(crate) const DEFAULT_MINI_SUBAGENT_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
 
 const MINI_SUBAGENT_DEVELOPER_PROMPT: &str = r#"You are a read-only subagent running on a smaller/cheaper model.
 
@@ -68,19 +68,24 @@ impl ToolHandler for SpawnMiniSubagentHandler {
 
         let mut invocation = parse_spawn_subagent_invocation(&arguments)
             .map_err(FunctionCallError::RespondToModel)?;
-        invocation.model = Some(MINI_SUBAGENT_MODEL_SLUG.to_string());
 
         let label = invocation.label.clone();
         let subagent_label = format!("{SPAWN_MINI_SUBAGENT_LABEL_PREFIX}_{label}");
+
+        let model = turn
+            .mini_subagent_model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MINI_SUBAGENT_MODEL_SLUG.to_string());
+        invocation.model = Some(model.clone());
 
         let mut cfg = turn.client.config().as_ref().clone();
         cfg.developer_instructions = Some(build_mini_subagent_developer_instructions(
             cfg.developer_instructions.as_deref().unwrap_or_default(),
         ));
-        cfg.model = Some(MINI_SUBAGENT_MODEL_SLUG.to_string());
+        cfg.model = Some(model);
         cfg.model_reasoning_effort = turn
-            .subagent_reasoning_effort
-            .or(Some(codex_protocol::openai_models::ReasoningEffort::Low));
+            .mini_subagent_reasoning_effort
+            .or(Some(codex_protocol::openai_models::ReasoningEffort::Medium));
         cfg.model_reasoning_summary = turn.client.get_reasoning_summary();
 
         let mut features = cfg.features.clone();

@@ -35,6 +35,7 @@ pub use plan_variants::PlanVariantsHandler;
 pub use read_file::ReadFileHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
+pub(crate) use spawn_mini_subagent::DEFAULT_MINI_SUBAGENT_MODEL_SLUG;
 pub(crate) use spawn_mini_subagent::SPAWN_MINI_SUBAGENT_LABEL_PREFIX;
 pub(crate) use spawn_mini_subagent::SPAWN_MINI_SUBAGENT_TOOL_NAME;
 pub use spawn_mini_subagent::SpawnMiniSubagentHandler;

@@ -24,7 +24,10 @@ model = "gpt-5.1-codex-max"
 # Optional model used for `/plan` (defaults to `model` when unset).
 # plan_model = "gpt-5.1-codex"
 
-# Optional model used for `/plan` exploration subagents (defaults to the active model for that turn).
+# Optional model used for mini subagents (used for `/plan` exploration and `spawn_mini_subagent`).
+# mini_subagent_model = "gpt-5.1-codex-mini"
+#
+# Deprecated alias (still supported for compatibility):
 # explore_model = "gpt-5.1-mini"
 
 # Optional model used for spawned subagents (defaults to the active model for that turn).
@@ -52,7 +55,10 @@ model_reasoning_effort = "medium"
 # Optional reasoning effort for `/plan` (defaults to `model_reasoning_effort` when unset).
 # plan_model_reasoning_effort = "medium"
 
-# Optional reasoning effort for `/plan` exploration subagents (defaults to the active effort for that turn).
+# Optional reasoning effort for mini subagents (used for `/plan` exploration and `spawn_mini_subagent`).
+# mini_subagent_model_reasoning_effort = "medium"
+#
+# Deprecated alias (still supported for compatibility):
 # explore_model_reasoning_effort = "medium"
 
 # Optional reasoning effort for spawned subagents (defaults to the active effort for that turn).

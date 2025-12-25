@@ -125,6 +125,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "approve_plan",
         "propose_plan_variants",
         "spawn_subagent",
+        "spawn_mini_subagent",
         "apply_patch",
         "view_image",
     ];
@@ -329,10 +330,12 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
             model: Some("o3".to_string()),
             plan_model: None,
             explore_model: None,
+            mini_subagent_model: None,
             subagent_model: None,
             effort: Some(Some(ReasoningEffort::High)),
             plan_effort: None,
             explore_effort: None,
+            mini_subagent_effort: None,
             subagent_effort: None,
             summary: Some(ReasoningSummary::Detailed),
         })
@@ -414,10 +417,12 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             model: None,
             plan_model: None,
             explore_model: None,
+            mini_subagent_model: None,
             subagent_model: None,
             effort: None,
             plan_effort: None,
             explore_effort: None,
+            mini_subagent_effort: None,
             subagent_effort: None,
             summary: None,
         })

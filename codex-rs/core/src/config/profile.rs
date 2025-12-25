@@ -14,6 +14,7 @@ pub struct ConfigProfile {
     pub model: Option<String>,
     pub plan_model: Option<String>,
     pub explore_model: Option<String>,
+    pub mini_subagent_model: Option<String>,
     pub subagent_model: Option<String>,
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
@@ -23,6 +24,7 @@ pub struct ConfigProfile {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_model_reasoning_effort: Option<ReasoningEffort>,
     pub explore_model_reasoning_effort: Option<ReasoningEffort>,
+    pub mini_subagent_model_reasoning_effort: Option<ReasoningEffort>,
     pub subagent_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,

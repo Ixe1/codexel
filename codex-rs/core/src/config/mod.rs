@@ -105,6 +105,11 @@ pub struct Config {
     /// When unset, exploration flows inherit the active model for that turn.
     pub explore_model: Option<String>,
 
+    /// Optional override of model selection used for mini subagents (the `spawn_mini_subagent` tool flow).
+    ///
+    /// When unset, mini subagents use their configured default model.
+    pub mini_subagent_model: Option<String>,
+
     /// Optional override of model selection used for ordinary spawned subagents (the `spawn_subagent` tool flow).
     ///
     /// When unset, spawned subagents inherit the active model for that turn.
@@ -262,6 +267,11 @@ pub struct Config {
     ///
     /// When unset, exploration flows inherit the active reasoning effort for that turn.
     pub explore_model_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Value to use for `reasoning.effort` for mini subagents (the `spawn_mini_subagent` tool flow).
+    ///
+    /// When unset, mini subagents use their configured default reasoning effort.
+    pub mini_subagent_model_reasoning_effort: Option<ReasoningEffort>,
 
     /// Value to use for `reasoning.effort` for ordinary spawned subagents (the `spawn_subagent` tool flow).
     ///
@@ -654,6 +664,8 @@ pub struct ConfigToml {
     pub plan_model: Option<String>,
     /// Optional override of model selection used for exploration flows (e.g. `/plan` exploration subagents).
     pub explore_model: Option<String>,
+    /// Optional override of model selection used for mini subagents (the `spawn_mini_subagent` tool flow).
+    pub mini_subagent_model: Option<String>,
     /// Optional override of model selection used for ordinary spawned subagents (the `spawn_subagent` tool flow).
     pub subagent_model: Option<String>,
     /// Review model override used by the `/review` feature.
@@ -763,6 +775,7 @@ pub struct ConfigToml {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_model_reasoning_effort: Option<ReasoningEffort>,
     pub explore_model_reasoning_effort: Option<ReasoningEffort>,
+    pub mini_subagent_model_reasoning_effort: Option<ReasoningEffort>,
     pub subagent_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
@@ -1247,6 +1260,17 @@ impl Config {
         let model = model.or(config_profile.model).or(cfg.model);
         let plan_model = config_profile.plan_model.or(cfg.plan_model);
         let explore_model = config_profile.explore_model.or(cfg.explore_model);
+        let mini_subagent_model = config_profile
+            .mini_subagent_model
+            .or(cfg.mini_subagent_model)
+            .or_else(|| {
+                if explore_model.is_some() {
+                    tracing::warn!(
+                        "config keys `explore_model`/`explore_model_reasoning_effort` are deprecated; use `mini_subagent_model`/`mini_subagent_model_reasoning_effort` instead"
+                    );
+                }
+                explore_model.clone()
+            });
         let subagent_model = config_profile.subagent_model.or(cfg.subagent_model);
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
@@ -1307,6 +1331,7 @@ impl Config {
             model,
             plan_model,
             explore_model,
+            mini_subagent_model,
             subagent_model,
             review_model,
             model_context_window: cfg.model_context_window,
@@ -1365,6 +1390,11 @@ impl Config {
                 .or(cfg.plan_model_reasoning_effort),
             explore_model_reasoning_effort: config_profile
                 .explore_model_reasoning_effort
+                .or(cfg.explore_model_reasoning_effort),
+            mini_subagent_model_reasoning_effort: config_profile
+                .mini_subagent_model_reasoning_effort
+                .or(cfg.mini_subagent_model_reasoning_effort)
+                .or(config_profile.explore_model_reasoning_effort)
                 .or(cfg.explore_model_reasoning_effort),
             subagent_model_reasoning_effort: config_profile
                 .subagent_model_reasoning_effort
@@ -3133,6 +3163,7 @@ model_verbosity = "high"
                 model: Some("o3".to_string()),
                 plan_model: None,
                 explore_model: None,
+                mini_subagent_model: None,
                 subagent_model: None,
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_context_window: None,
@@ -3163,6 +3194,7 @@ model_verbosity = "high"
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 plan_model_reasoning_effort: None,
                 explore_model_reasoning_effort: None,
+                mini_subagent_model_reasoning_effort: None,
                 subagent_model_reasoning_effort: None,
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_supports_reasoning_summaries: None,
@@ -3214,6 +3246,7 @@ model_verbosity = "high"
             model: Some("gpt-3.5-turbo".to_string()),
             plan_model: None,
             explore_model: None,
+            mini_subagent_model: None,
             subagent_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
@@ -3244,6 +3277,7 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             plan_model_reasoning_effort: None,
             explore_model_reasoning_effort: None,
+            mini_subagent_model_reasoning_effort: None,
             subagent_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
@@ -3310,6 +3344,7 @@ model_verbosity = "high"
             model: Some("o3".to_string()),
             plan_model: None,
             explore_model: None,
+            mini_subagent_model: None,
             subagent_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
@@ -3340,6 +3375,7 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             plan_model_reasoning_effort: None,
             explore_model_reasoning_effort: None,
+            mini_subagent_model_reasoning_effort: None,
             subagent_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
@@ -3392,6 +3428,7 @@ model_verbosity = "high"
             model: Some("gpt-5.1".to_string()),
             plan_model: None,
             explore_model: None,
+            mini_subagent_model: None,
             subagent_model: None,
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
@@ -3422,6 +3459,7 @@ model_verbosity = "high"
             model_reasoning_effort: Some(ReasoningEffort::High),
             plan_model_reasoning_effort: None,
             explore_model_reasoning_effort: None,
+            mini_subagent_model_reasoning_effort: None,
             subagent_model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_supports_reasoning_summaries: None,

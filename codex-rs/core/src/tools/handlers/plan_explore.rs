@@ -14,6 +14,7 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::DEFAULT_MINI_SUBAGENT_MODEL_SLUG;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 
@@ -79,14 +80,14 @@ async fn run_one_explorer(
 
     cfg.model = Some(
         parent_ctx
-            .explore_model
+            .mini_subagent_model
             .clone()
-            .unwrap_or_else(|| parent_ctx.client.get_model()),
+            .unwrap_or_else(|| DEFAULT_MINI_SUBAGENT_MODEL_SLUG.to_string()),
     );
     invocation.model = cfg.model.clone();
     cfg.model_reasoning_effort = parent_ctx
-        .explore_reasoning_effort
-        .or(parent_ctx.client.get_reasoning_effort());
+        .mini_subagent_reasoning_effort
+        .or(Some(codex_protocol::openai_models::ReasoningEffort::Medium));
     cfg.model_reasoning_summary = parent_ctx.client.get_reasoning_summary();
 
     let mut features = cfg.features.clone();
