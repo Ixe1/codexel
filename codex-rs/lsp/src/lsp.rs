@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use dunce::canonicalize as normalize_path;
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Child;
@@ -32,6 +33,26 @@ use crate::servers::language_id_for_path;
 use crate::watcher::ChangeKind;
 use crate::watcher::FileChange;
 use crate::watcher::start_watcher;
+
+fn normalize_root_path(root: &Path) -> PathBuf {
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(root)
+    } else {
+        root.to_path_buf()
+    };
+    normalize_path(&root).unwrap_or(root)
+}
+
+fn normalize_file_path(root: &Path, path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    normalize_path(&path).unwrap_or(path)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspManagerConfig {
@@ -90,13 +111,14 @@ impl LspManager {
     }
 
     pub async fn ensure_workspace(&self, root: &Path) -> anyhow::Result<()> {
+        let root = normalize_root_path(root);
         let config = self.inner.config.read().await.clone();
         if !config.enabled {
             return Ok(());
         }
 
         let mut state = self.inner.state.lock().await;
-        if state.workspaces.contains_key(root) {
+        if state.workspaces.contains_key(&root) {
             return Ok(());
         }
 
@@ -107,12 +129,12 @@ impl LspManager {
             .collect();
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let watcher = start_watcher(root, tx).context("start filesystem watcher")?;
+        let watcher = start_watcher(&root, tx).context("start filesystem watcher")?;
 
         state.workspaces.insert(
-            root.to_path_buf(),
+            root.clone(),
             WorkspaceState {
-                root: root.to_path_buf(),
+                root: root.clone(),
                 _watcher: watcher,
                 ignored,
                 servers: HashMap::new(),
@@ -123,7 +145,7 @@ impl LspManager {
         );
 
         let manager = self.clone();
-        let root = root.to_path_buf();
+        let root = root.clone();
         tokio::spawn(async move {
             manager.run_change_loop(root, rx).await;
         });
@@ -168,24 +190,27 @@ impl LspManager {
         path: Option<&Path>,
         max_results: usize,
     ) -> anyhow::Result<Vec<Diagnostic>> {
-        self.ensure_workspace(root).await?;
+        let root = normalize_root_path(root);
+        self.ensure_workspace(&root).await?;
+        let path = path.map(|path| normalize_file_path(&root, path));
         let state = self.inner.state.lock().await;
         let ws = state
             .workspaces
-            .get(root)
+            .get(&root)
             .context("workspace not initialized")?;
-        Ok(ws.collect_diagnostics(path, max_results))
+        Ok(ws.collect_diagnostics(path.as_deref(), max_results))
     }
 
     pub async fn subscribe_diagnostics(
         &self,
         root: &Path,
     ) -> anyhow::Result<tokio::sync::broadcast::Receiver<DiagnosticsUpdate>> {
-        self.ensure_workspace(root).await?;
+        let root = normalize_root_path(root);
+        self.ensure_workspace(&root).await?;
         let state = self.inner.state.lock().await;
         let ws = state
             .workspaces
-            .get(root)
+            .get(&root)
             .context("workspace not initialized")?;
         Ok(ws.diag_updates.subscribe())
     }
@@ -196,10 +221,12 @@ impl LspManager {
         path: &Path,
         position: Position,
     ) -> anyhow::Result<Vec<Location>> {
-        self.ensure_workspace(root).await?;
-        self.open_or_update(root, path).await?;
-        let server = self.server_for_path(root, path).await?;
-        server.definition(path, position).await
+        let root = normalize_root_path(root);
+        let path = normalize_file_path(&root, path);
+        self.ensure_workspace(&root).await?;
+        self.open_or_update(&root, &path).await?;
+        let server = self.server_for_path(&root, &path).await?;
+        server.definition(&path, position).await
     }
 
     pub async fn references(
@@ -209,10 +236,14 @@ impl LspManager {
         position: Position,
         include_declaration: bool,
     ) -> anyhow::Result<Vec<Location>> {
-        self.ensure_workspace(root).await?;
-        self.open_or_update(root, path).await?;
-        let server = self.server_for_path(root, path).await?;
-        server.references(path, position, include_declaration).await
+        let root = normalize_root_path(root);
+        let path = normalize_file_path(&root, path);
+        self.ensure_workspace(&root).await?;
+        self.open_or_update(&root, &path).await?;
+        let server = self.server_for_path(&root, &path).await?;
+        server
+            .references(&path, position, include_declaration)
+            .await
     }
 
     pub async fn document_symbols(
@@ -220,10 +251,12 @@ impl LspManager {
         root: &Path,
         path: &Path,
     ) -> anyhow::Result<Vec<DocumentSymbol>> {
-        self.ensure_workspace(root).await?;
-        self.open_or_update(root, path).await?;
-        let server = self.server_for_path(root, path).await?;
-        server.document_symbols(path).await
+        let root = normalize_root_path(root);
+        let path = normalize_file_path(&root, path);
+        self.ensure_workspace(&root).await?;
+        self.open_or_update(&root, &path).await?;
+        let server = self.server_for_path(&root, &path).await?;
+        server.document_symbols(&path).await
     }
 
     async fn server_for_path(&self, root: &Path, path: &Path) -> anyhow::Result<Arc<ServerState>> {
@@ -255,6 +288,8 @@ impl LspManager {
         language_id: &str,
         bytes: Vec<u8>,
     ) -> anyhow::Result<()> {
+        let root = normalize_root_path(root);
+        let path = normalize_file_path(&root, path);
         let config = self.inner.config.read().await.clone();
         if !config.enabled {
             return Ok(());
@@ -269,10 +304,10 @@ impl LspManager {
             let mut state = self.inner.state.lock().await;
             let ws = state
                 .workspaces
-                .get_mut(root)
+                .get_mut(&root)
                 .context("workspace not initialized")?;
 
-            if ws.is_ignored(path) {
+            if ws.is_ignored(&path) {
                 return Ok(());
             }
 
@@ -280,7 +315,7 @@ impl LspManager {
                 let server = start_server(&ws.root, language_id, &config).await?;
                 ws.servers
                     .insert(language_id.to_string(), Arc::clone(&server));
-                self.spawn_notification_loop(root.to_path_buf(), Arc::clone(&server));
+                self.spawn_notification_loop(root.clone(), Arc::clone(&server));
             }
 
             let server = ws
@@ -291,7 +326,7 @@ impl LspManager {
 
             let doc = ws
                 .open_docs
-                .entry(path.to_path_buf())
+                .entry(path.clone())
                 .or_insert(OpenDocState { version: 0 });
             doc.version = doc.version.saturating_add(1);
 
@@ -300,9 +335,9 @@ impl LspManager {
         };
 
         if is_open {
-            server.did_open(path, language_id, version, &text).await?;
+            server.did_open(&path, language_id, version, &text).await?;
         } else {
-            server.did_change(path, version, &text).await?;
+            server.did_change(&path, version, &text).await?;
         }
         Ok(())
     }
@@ -319,6 +354,7 @@ impl LspManager {
                 let Some((path, diags)) = parse_publish_diagnostics(&params) else {
                     continue;
                 };
+                let path = normalize_path(&path).unwrap_or(path);
                 let update = DiagnosticsUpdate {
                     path: path.to_string_lossy().into_owned(),
                     diagnostics: diags.clone(),
@@ -592,7 +628,11 @@ async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<()> {
 
 fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnostic>)> {
     let uri = params.get("uri")?.as_str()?;
-    let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
+    let path = url::Url::parse(uri)
+        .ok()?
+        .to_file_path()
+        .ok()
+        .map(|path| normalize_path(&path).unwrap_or(path))?;
     let raw = params.get("diagnostics")?.as_array()?;
     let mut out = Vec::with_capacity(raw.len());
     for d in raw {
@@ -667,6 +707,7 @@ fn parse_location_like(value: Value) -> Vec<Location> {
             .ok()
             .and_then(|u| u.to_file_path().ok())
     {
+        let path = normalize_path(&path).unwrap_or(path);
         return vec![Location {
             path: path.to_string_lossy().into_owned(),
             range,
@@ -681,6 +722,7 @@ fn parse_location_like(value: Value) -> Vec<Location> {
             .ok()
             .and_then(|u| u.to_file_path().ok())
     {
+        let path = normalize_path(&path).unwrap_or(path);
         return vec![Location {
             path: path.to_string_lossy().into_owned(),
             range,

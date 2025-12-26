@@ -71,6 +71,7 @@ When LSP tools are available and the file/language is supported:
 - Use `lsp_diagnostics` for current errors/warnings.
 - Use `rg` for broad text search (log strings, config keys) and as a fallback if LSP returns errors or empty results unexpectedly.
 - Treat `lsp_document_symbols` as best-effort (it may return empty in some environments).
+- Prefer absolute paths for `root`, `file_path`, and `path`. If a path is relative, it is resolved relative to `root` (which defaults to the session working directory).
 "#;
 
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
@@ -1253,7 +1254,8 @@ fn create_lsp_diagnostics_tool() -> ToolSpec {
         "root".to_string(),
         JsonSchema::String {
             description: Some(
-                "Workspace root directory. Defaults to the session working directory.".to_string(),
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
             ),
         },
     );
@@ -1261,7 +1263,7 @@ fn create_lsp_diagnostics_tool() -> ToolSpec {
         "path".to_string(),
         JsonSchema::String {
             description: Some(
-                "Optional file path (absolute or relative to root). When omitted, returns diagnostics for all tracked files."
+                "Optional file path (absolute path preferred). If relative, it is resolved relative to root. When omitted, returns diagnostics for all tracked files."
                     .to_string(),
             ),
         },
@@ -1295,14 +1297,18 @@ fn create_lsp_definition_tool() -> ToolSpec {
         "root".to_string(),
         JsonSchema::String {
             description: Some(
-                "Workspace root directory. Defaults to the session working directory.".to_string(),
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
             ),
         },
     );
     properties.insert(
         "file_path".to_string(),
         JsonSchema::String {
-            description: Some("File path (absolute or relative to root).".to_string()),
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
         },
     );
     properties.insert(
@@ -1340,14 +1346,18 @@ fn create_lsp_references_tool() -> ToolSpec {
         "root".to_string(),
         JsonSchema::String {
             description: Some(
-                "Workspace root directory. Defaults to the session working directory.".to_string(),
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
             ),
         },
     );
     properties.insert(
         "file_path".to_string(),
         JsonSchema::String {
-            description: Some("File path (absolute or relative to root).".to_string()),
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
         },
     );
     properties.insert(
@@ -1393,14 +1403,18 @@ fn create_lsp_document_symbols_tool() -> ToolSpec {
         "root".to_string(),
         JsonSchema::String {
             description: Some(
-                "Workspace root directory. Defaults to the session working directory.".to_string(),
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
             ),
         },
     );
     properties.insert(
         "file_path".to_string(),
         JsonSchema::String {
-            description: Some("File path (absolute or relative to root).".to_string()),
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
         },
     );
 

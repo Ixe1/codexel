@@ -1543,6 +1543,7 @@ name = "codex-lsp"
 version = "0.1.4"
 dependencies = [
  "anyhow",
+ "dunce",
  "notify",
  "pretty_assertions",
  "serde",
