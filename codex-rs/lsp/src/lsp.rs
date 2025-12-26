@@ -153,6 +153,39 @@ impl LspManager {
         Ok(())
     }
 
+    /// Best-effort background warmup for the LSP manager and configured language servers.
+    ///
+    /// Intended to run at session start so the first user-triggered LSP request doesn’t pay the
+    /// full server spawn + initialize + indexing cost.
+    pub async fn prewarm(&self, root: &Path) -> anyhow::Result<()> {
+        let root = normalize_root_path(root);
+        let config = self.inner.config.read().await.clone();
+        if !config.enabled {
+            return Ok(());
+        }
+
+        self.ensure_workspace(&root).await?;
+
+        let mut state = self.inner.state.lock().await;
+        let ws = state
+            .workspaces
+            .get_mut(&root)
+            .context("workspace not initialized")?;
+
+        for language_id in config.servers.keys() {
+            if ws.servers.contains_key(language_id.as_str()) {
+                continue;
+            }
+
+            let server = start_server(&ws.root, language_id.as_str(), &config).await?;
+            ws.servers
+                .insert(language_id.to_string(), Arc::clone(&server));
+            self.spawn_notification_loop(root.clone(), server);
+        }
+
+        Ok(())
+    }
+
     async fn run_change_loop(&self, root: PathBuf, mut rx: mpsc::UnboundedReceiver<FileChange>) {
         let mut last_seen: HashMap<PathBuf, tokio::time::Instant> = HashMap::new();
         while let Some(change) = rx.recv().await {

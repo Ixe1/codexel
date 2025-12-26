@@ -858,6 +858,16 @@ impl Session {
             sess.send_event_raw(event).await;
         }
 
+        if config.features.enabled(Feature::Lsp) {
+            let lsp = sess.services.lsp_manager.clone();
+            let root = session_configuration.cwd.clone();
+            tokio::spawn(async move {
+                if let Err(err) = lsp.prewarm(&root).await {
+                    warn!("lsp prewarm failed: {err:#}");
+                }
+            });
+        }
+
         // Construct sandbox_state before initialize() so it can be sent to each
         // MCP server immediately after it becomes ready (avoiding blocking).
         let sandbox_state = SandboxState {
