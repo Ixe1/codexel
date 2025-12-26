@@ -1148,12 +1148,15 @@ impl HistoryCell for SubAgentToolCallCell {
         let elapsed = self.duration.unwrap_or_else(|| self.start_time.elapsed());
         let elapsed = fmt_subagent_duration(elapsed);
 
+        let is_mini = self.invocation.model.as_deref() == Some("gpt-5.1-codex-mini");
+        let is_explorer = self.invocation.label.starts_with("plan_explore_");
+
         let mut header_spans: Vec<Span<'static>> = vec![indicator, " ".into(), "Subagent".bold()];
-        if self.invocation.label.starts_with("plan_explore_") {
+        if is_explorer && !is_mini {
             header_spans.push(" ".into());
             header_spans.push("[Explorer]".cyan().bold());
         }
-        if self.invocation.model.as_deref() == Some("gpt-5.1-codex-mini") {
+        if is_mini {
             header_spans.push(" ".into());
             header_spans.push("[Mini]".magenta().bold());
         }
@@ -1950,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_cell_renders_explorer_and_mini_badges() {
+    fn subagent_cell_renders_mini_badge_when_explorer_and_mini() {
         let invocation = SubAgentInvocation {
             description: "Repo map".to_string(),
             label: "plan_explore_1".to_string(),
@@ -1960,11 +1963,9 @@ mod tests {
         let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
         cell.duration = Some(Duration::from_secs(0));
         let lines = render_lines(&cell.display_lines(200));
-        assert!(
-            lines
-                .first()
-                .is_some_and(|line| line.contains("Subagent [Explorer] [Mini]:"))
-        );
+        let first = lines.first();
+        assert!(first.is_some_and(|line| line.contains("Subagent [Mini]:")));
+        assert!(first.is_some_and(|line| !line.contains("[Explorer]")));
     }
 
     #[tokio::test]
