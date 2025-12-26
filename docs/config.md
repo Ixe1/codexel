@@ -84,6 +84,8 @@ command = "rust-analyzer"
 args = []
 ```
 
+If you omit `[lsp.servers.*]`, Codex will try to autodetect common language servers from `PATH` (e.g. `rust-analyzer`, `gopls`, `pyright-langserver`, `typescript-language-server`) and start them as needed.
+
 ## Model selection
 
 ### model

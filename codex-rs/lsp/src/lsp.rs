@@ -34,6 +34,78 @@ use crate::watcher::ChangeKind;
 use crate::watcher::FileChange;
 use crate::watcher::start_watcher;
 
+fn is_prewarm_language_id(language_id: &str) -> bool {
+    matches!(
+        language_id,
+        "rust"
+            | "go"
+            | "python"
+            | "typescript"
+            | "typescriptreact"
+            | "javascript"
+            | "javascriptreact"
+    )
+}
+
+fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<String> {
+    const MAX_ENTRIES: usize = 10_000;
+    const MAX_DEPTH: usize = 6;
+
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut queue = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+
+    while let Some((dir, depth)) = queue.pop() {
+        if seen >= MAX_ENTRIES || depth > MAX_DEPTH {
+            continue;
+        }
+
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in rd.flatten() {
+            if seen >= MAX_ENTRIES {
+                break;
+            }
+            seen += 1;
+
+            let path = entry.path();
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+
+            if ft.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if matches!(name, ".git" | "node_modules" | "target") {
+                    continue;
+                }
+                queue.push((path, depth.saturating_add(1)));
+                continue;
+            }
+
+            if !ft.is_file() {
+                continue;
+            }
+
+            if let Some(language_id) = language_id_for_path(&path)
+                && is_prewarm_language_id(language_id)
+            {
+                found.insert(language_id.to_string());
+                if found.len() >= 7 {
+                    return found;
+                }
+            }
+        }
+    }
+
+    found
+}
+
 fn normalize_root_path(root: &Path) -> PathBuf {
     let root = if root.is_absolute() {
         root.to_path_buf()
@@ -166,21 +238,51 @@ impl LspManager {
 
         self.ensure_workspace(&root).await?;
 
-        let mut state = self.inner.state.lock().await;
-        let ws = state
-            .workspaces
-            .get_mut(&root)
-            .context("workspace not initialized")?;
+        let detected = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || detect_language_ids_for_root(&root)
+        })
+        .await
+        .unwrap_or_default();
 
-        for language_id in config.servers.keys() {
-            if ws.servers.contains_key(language_id.as_str()) {
+        let mut language_ids: std::collections::BTreeSet<String> = config
+            .servers
+            .keys()
+            .filter(|id| is_prewarm_language_id(id))
+            .cloned()
+            .collect();
+        language_ids.extend(detected);
+
+        for language_id in language_ids {
+            {
+                let state = self.inner.state.lock().await;
+                let Some(ws) = state.workspaces.get(&root) else {
+                    continue;
+                };
+                if ws.servers.contains_key(&language_id) {
+                    continue;
+                }
+            }
+
+            if !config.servers.contains_key(&language_id) && autodetect_server(&language_id).is_none()
+            {
                 continue;
             }
 
-            let server = start_server(&ws.root, language_id.as_str(), &config).await?;
-            ws.servers
-                .insert(language_id.to_string(), Arc::clone(&server));
-            self.spawn_notification_loop(root.clone(), server);
+            match start_server(&root, &language_id, &config).await {
+                Ok(server) => {
+                    let mut state = self.inner.state.lock().await;
+                    let Some(ws) = state.workspaces.get_mut(&root) else {
+                        continue;
+                    };
+                    ws.servers
+                        .insert(language_id.to_string(), Arc::clone(&server));
+                    self.spawn_notification_loop(root.clone(), server);
+                }
+                Err(err) => {
+                    warn!("lsp prewarm failed for {language_id}: {err:#}");
+                }
+            }
         }
 
         Ok(())
