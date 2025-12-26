@@ -414,7 +414,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Lsp,
         key: "lsp",
-        stage: Stage::Experimental,
+        stage: Stage::Beta {
+            name: "LSP",
+            menu_description: "Enable Language Server Protocol diagnostics + navigation (/diagnostics, lsp_* tools).",
+            announcement: "NEW! Try LSP diagnostics and navigation. Enable in /experimental!",
+        },
         default_enabled: false,
     },
     FeatureSpec {
