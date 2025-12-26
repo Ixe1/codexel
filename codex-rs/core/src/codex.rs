@@ -619,6 +619,10 @@ impl Session {
                             session_configuration.developer_instructions.clone(),
                         );
                     let developer_instructions =
+                        crate::tools::spec::prepend_lsp_navigation_developer_instructions(
+                            developer_instructions,
+                        );
+                    let developer_instructions =
                         crate::tools::spec::prepend_ask_user_question_developer_instructions(
                             developer_instructions,
                         );
@@ -641,15 +645,19 @@ impl Session {
                     )
                 }
                 SessionSource::Exec => {
+                    let developer_instructions =
+                        crate::tools::spec::prepend_lsp_navigation_developer_instructions(
+                            session_configuration.developer_instructions.clone(),
+                        );
                     let developer_instructions = if per_turn_config
                         .features
                         .enabled(crate::features::Feature::MiniSubagents)
                     {
                         crate::tools::spec::prepend_spawn_mini_subagent_developer_instructions(
-                            session_configuration.developer_instructions.clone(),
+                            developer_instructions,
                         )
                     } else {
-                        session_configuration.developer_instructions.clone()
+                        developer_instructions
                     };
                     crate::tools::spec::prepend_spawn_subagent_developer_instructions(
                         developer_instructions,

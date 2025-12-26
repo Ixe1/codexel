@@ -65,12 +65,20 @@ Rules:
 - If the user explicitly delegates (e.g., "use your best judgment" / "surprise me"), proceed and state the assumptions you chose, plus the main knobs the user can tweak.
 "#;
 
+pub(crate) const LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS: &str = r#"## LSP-first navigation
+When LSP tools are available and the file/language is supported:
+- Prefer symbol-aware navigation via `lsp_definition` and `lsp_references` over `rg` for definition/usage questions.
+- Use `lsp_diagnostics` for current errors/warnings.
+- Use `rg` for broad text search (log strings, config keys) and as a fallback if LSP returns errors or empty results unexpectedly.
+- Treat `lsp_document_symbols` as best-effort (it may return empty in some environments).
+"#;
+
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
 Use `spawn_subagent` to delegate short, read-only research tasks (repo exploration, tracing control flow, summarizing how something works). Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
 
 Default behavior (strongly preferred):
 - If you need to explore an unfamiliar repo area, treat subagents as your first move.
-- If you expect to do 2+ repo-search/read steps (multiple `rg`, multiple file opens, “I need to find where X is implemented”), spawn 2–3 subagents first, unless you already know the exact file/symbol to read.
+- If you expect to do 2+ repo-search/read steps (multiple `lsp_*` calls or `rg` searches, multiple file opens, “I need to find where X is implemented”), spawn 2–3 subagents first, unless you already know the exact file/symbol to read.
 - While subagents run, keep making progress: do one targeted search/read yourself in parallel, then merge results.
 
 When to use it:
@@ -79,7 +87,7 @@ When to use it:
 - Focused research tasks (e.g. “find where X is configured”, “summarize how Y works”).
 
 When not to use it:
-- Needle queries where you already know the file/symbol, or you're only checking 1–3 files (do a direct `rg` / targeted read instead).
+- Needle queries where you already know the file/symbol, or you're only checking 1–3 files (do a direct `lsp_definition`/`lsp_references` or `rg` / targeted read instead).
 - Anything that requires writing code or asking the user a question.
 
 Requirements:
@@ -183,6 +191,23 @@ pub(crate) fn prepend_clarification_policy_developer_instructions(
             "{CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS}\n{existing}"
         )),
         None => Some(CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
+pub(crate) fn prepend_lsp_navigation_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## LSP-first navigation")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS.to_string()),
     }
 }
 

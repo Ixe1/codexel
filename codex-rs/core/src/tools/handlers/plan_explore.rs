@@ -76,7 +76,9 @@ async fn run_one_explorer(
     let mut invocation = invocation;
 
     // Keep this prompt focused and small; avoid inheriting large caller developer instructions.
-    cfg.developer_instructions = Some(format!("{PLAN_EXPLORE_PROMPT}\n\nFocus:\n- {focus}\n"));
+    let prompt = format!("{PLAN_EXPLORE_PROMPT}\n\nFocus:\n- {focus}\n");
+    cfg.developer_instructions =
+        crate::tools::spec::prepend_lsp_navigation_developer_instructions(Some(prompt));
 
     cfg.model = Some(
         parent_ctx

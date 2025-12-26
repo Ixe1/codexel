@@ -207,6 +207,9 @@ async fn start_plan_conversation(
     let existing =
         crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(existing))
             .unwrap_or_default();
+    let existing =
+        crate::tools::spec::prepend_lsp_navigation_developer_instructions(Some(existing))
+            .unwrap_or_default();
     let developer_instructions =
         build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
     sub_agent_config.developer_instructions = Some(developer_instructions);
