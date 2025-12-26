@@ -50,6 +50,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PlanApprovalRequestEvent;
 use codex_core::protocol::PlanRequest;
 use codex_core::protocol::RateLimitSnapshot;
+use codex_core::protocol::RawResponseItemEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::SkillsListEntry;
@@ -75,6 +76,7 @@ use codex_core::skills::model::SkillMetadata;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::user_input::UserInput;
 use crossterm::event::KeyCode;
@@ -133,6 +135,7 @@ use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
+use self::interrupts::CompletedLspToolCall;
 use self::interrupts::InterruptManager;
 mod agent;
 use self::agent::spawn_agent;
@@ -317,6 +320,7 @@ pub(crate) struct ChatWidget {
     stream_controller: Option<StreamController>,
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
+    pending_lsp_tool_calls: HashMap<String, PendingLspToolCall>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     task_complete_pending: bool,
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
@@ -357,6 +361,12 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
+}
+
+struct PendingLspToolCall {
+    tool_name: String,
+    arguments: String,
+    start_time: std::time::Instant,
 }
 
 struct UserMessage {
@@ -1069,6 +1079,64 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_web_search_call(ev.query));
     }
 
+    fn on_raw_response_item(&mut self, ev: RawResponseItemEvent) {
+        match ev.item {
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => {
+                if !name.starts_with("lsp_") {
+                    return;
+                }
+                self.pending_lsp_tool_calls.insert(
+                    call_id,
+                    PendingLspToolCall {
+                        tool_name: name,
+                        arguments,
+                        start_time: std::time::Instant::now(),
+                    },
+                );
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                let Some(call) = self.pending_lsp_tool_calls.remove(&call_id) else {
+                    return;
+                };
+                if !call.tool_name.starts_with("lsp_") {
+                    return;
+                }
+
+                let completed = CompletedLspToolCall {
+                    tool_name: call.tool_name,
+                    arguments: call.arguments,
+                    output: output.content,
+                    success: output.success.unwrap_or(true),
+                    duration: Some(call.start_time.elapsed()),
+                };
+                let completed2 = completed.clone();
+                self.defer_or_handle(
+                    |q| q.push_lsp_tool_call(completed),
+                    |s| s.handle_lsp_tool_call_now(completed2),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn handle_lsp_tool_call_now(&mut self, ev: CompletedLspToolCall) {
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.add_boxed_history(Box::new(history_cell::FunctionToolCallCell::new(
+            ev.tool_name,
+            ev.arguments,
+            ev.output,
+            ev.success,
+            ev.duration,
+        )));
+        self.request_redraw();
+    }
+
     fn on_get_history_entry_response(
         &mut self,
         event: codex_core::protocol::GetHistoryEntryResponseEvent,
@@ -1636,6 +1704,7 @@ impl ChatWidget {
             stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_lsp_tool_calls: HashMap::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1724,6 +1793,7 @@ impl ChatWidget {
             stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_lsp_tool_calls: HashMap::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -2278,8 +2348,8 @@ impl ChatWidget {
                 }
             }
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
+            EventMsg::RawResponseItem(ev) => self.on_raw_response_item(ev),
+            EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)

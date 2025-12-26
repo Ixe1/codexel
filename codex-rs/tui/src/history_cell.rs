@@ -1098,6 +1098,103 @@ pub(crate) struct McpToolCallCell {
     animations_enabled: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct FunctionToolCallCell {
+    tool_name: String,
+    arguments: String,
+    output: String,
+    success: bool,
+    duration: Option<Duration>,
+}
+
+impl FunctionToolCallCell {
+    pub(crate) fn new(
+        tool_name: String,
+        arguments: String,
+        output: String,
+        success: bool,
+        duration: Option<Duration>,
+    ) -> Self {
+        Self {
+            tool_name,
+            arguments,
+            output,
+            success,
+            duration,
+        }
+    }
+
+    fn invocation_text(&self) -> String {
+        if self.arguments.trim().is_empty() {
+            return self.tool_name.clone();
+        }
+        format!("{} {}", self.tool_name, self.arguments)
+    }
+}
+
+impl HistoryCell for FunctionToolCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        let bullet = if self.success {
+            "•".green().bold()
+        } else {
+            "•".red().bold()
+        };
+        let header_text = "Called".bold();
+
+        let mut header_spans = vec![bullet, " ".into(), header_text, " ".into()];
+        if let Some(duration) = self.duration {
+            header_spans.push(format!("({})", fmt_subagent_duration(duration)).dim());
+            header_spans.push(" ".into());
+        }
+
+        let invocation_line: Line<'static> = Line::from(self.invocation_text());
+        let mut compact_header = Line::from(header_spans.clone());
+        let reserved = compact_header.width();
+        let inline_invocation =
+            invocation_line.width() <= (width as usize).saturating_sub(reserved);
+
+        if inline_invocation {
+            compact_header.extend(invocation_line.spans.clone());
+            lines.push(compact_header);
+        } else {
+            header_spans.pop(); // drop trailing space for standalone header
+            lines.push(Line::from(header_spans));
+
+            let opts = RtOptions::new((width as usize).saturating_sub(4))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into());
+            let wrapped = word_wrap_line(&invocation_line, opts);
+            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        if !self.output.trim().is_empty() {
+            let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+            let text = format_and_truncate_tool_result(
+                &self.output,
+                TOOL_CALL_MAX_LINES,
+                detail_wrap_width,
+            );
+            let mut detail_lines: Vec<Line<'static>> = Vec::new();
+            for segment in text.split('\n') {
+                let line = Line::from(segment.to_string().dim());
+                let wrapped = word_wrap_line(
+                    &line,
+                    RtOptions::new(detail_wrap_width)
+                        .initial_indent("".into())
+                        .subsequent_indent("    ".into()),
+                );
+                detail_lines.extend(wrapped.iter().map(line_to_static));
+            }
+            lines.extend(prefix_lines(detail_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        lines
+    }
+}
+
 impl McpToolCallCell {
     pub(crate) fn new(
         call_id: String,
@@ -2103,6 +2200,21 @@ mod tests {
 
     fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
         render_lines(&cell.transcript_lines(u16::MAX))
+    }
+
+    #[test]
+    fn function_tool_call_cell_renders_invocation_and_output() {
+        let cell = FunctionToolCallCell::new(
+            "lsp_definition".to_string(),
+            r#"{"file_path":"C:\\repo\\src\\main.rs","line":1,"character":1}"#.to_string(),
+            r#"{"locations":[]}"#.to_string(),
+            true,
+            Some(Duration::from_millis(120)),
+        );
+        let rendered = render_transcript(&cell).join("\n");
+        assert!(rendered.contains("Called"));
+        assert!(rendered.contains("lsp_definition"));
+        assert!(rendered.contains("\"locations\""));
     }
 
     #[test]

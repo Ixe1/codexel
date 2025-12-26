@@ -533,6 +533,7 @@ async fn make_chatwidget_manual(
         stream_controller: None,
         running_commands: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
+        pending_lsp_tool_calls: HashMap::new(),
         last_unified_wait: None,
         task_complete_pending: false,
         mcp_startup_status: None,
@@ -617,6 +618,55 @@ fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {
         last_token_usage: usage(total_tokens),
         model_context_window: Some(context_window),
     }
+}
+
+#[tokio::test]
+async fn lsp_tool_calls_render_in_history() {
+    let (mut chat, _app_event_tx, mut app_ev_rx, _op_rx) =
+        make_chatwidget_manual_with_sender().await;
+
+    chat.dispatch_event_msg(
+        None,
+        EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+            item: codex_protocol::models::ResponseItem::FunctionCall {
+                id: None,
+                name: "lsp_definition".to_string(),
+                arguments: r#"{"file_path":"C:\\repo\\src\\main.rs","line":1,"character":1}"#
+                    .to_string(),
+                call_id: "call-1".to_string(),
+            },
+        }),
+        false,
+    );
+
+    chat.dispatch_event_msg(
+        None,
+        EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+            item: codex_protocol::models::ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload {
+                    content: r#"{"locations":[]}"#.to_string(),
+                    success: Some(true),
+                    ..Default::default()
+                },
+            },
+        }),
+        false,
+    );
+
+    let rendered: String = drain_insert_history(&mut app_ev_rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect();
+
+    assert!(
+        rendered.contains("lsp_definition"),
+        "expected lsp tool call to be visible in history, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("\"locations\""),
+        "expected lsp tool output to be visible in history, got:\n{rendered}"
+    );
 }
 
 #[tokio::test]
