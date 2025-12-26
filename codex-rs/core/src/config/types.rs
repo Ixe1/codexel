@@ -29,7 +29,7 @@ pub struct LspServerConfigToml {
 #[serde(deny_unknown_fields)]
 pub struct LspConfigToml {
     /// Whether to include a diagnostics summary in the model prompt each turn.
-    #[serde(default)]
+    #[serde(default = "default_lsp_prompt_diagnostics")]
     pub prompt_diagnostics: bool,
 
     /// Maximum number of diagnostics to include in the prompt summary.
@@ -56,7 +56,7 @@ pub struct LspConfigToml {
 impl Default for LspConfigToml {
     fn default() -> Self {
         Self {
-            prompt_diagnostics: false,
+            prompt_diagnostics: default_lsp_prompt_diagnostics(),
             max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
             max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
             max_file_bytes: default_lsp_max_file_bytes(),
@@ -82,7 +82,7 @@ impl Default for LspConfig {
             ..Default::default()
         };
         Self {
-            prompt_diagnostics: false,
+            prompt_diagnostics: default_lsp_prompt_diagnostics(),
             max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
             max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
             manager,
@@ -121,6 +121,10 @@ impl From<LspConfigToml> for LspConfig {
             manager,
         }
     }
+}
+
+fn default_lsp_prompt_diagnostics() -> bool {
+    true
 }
 
 fn default_lsp_max_prompt_diagnostics() -> usize {

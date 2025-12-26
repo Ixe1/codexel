@@ -73,7 +73,7 @@ Optional configuration:
 
 ```toml
 [lsp]
-prompt_diagnostics = false
+prompt_diagnostics = true
 max_prompt_diagnostics = 10
 max_tool_diagnostics = 200
 max_file_bytes = 524288

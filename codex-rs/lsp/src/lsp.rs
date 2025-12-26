@@ -264,7 +264,8 @@ impl LspManager {
                 }
             }
 
-            if !config.servers.contains_key(&language_id) && autodetect_server(&language_id).is_none()
+            if !config.servers.contains_key(&language_id)
+                && autodetect_server(&language_id).is_none()
             {
                 continue;
             }
