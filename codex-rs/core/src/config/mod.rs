@@ -345,6 +345,9 @@ pub struct Config {
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config::types::OtelConfig,
+
+    /// Language Server Protocol (LSP) settings.
+    pub lsp: crate::config::types::LspConfig,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -763,6 +766,10 @@ pub struct ConfigToml {
 
     /// Collection of settings that are specific to the TUI.
     pub tui: Option<Tui>,
+
+    /// LSP settings (diagnostics + navigation).
+    #[serde(default)]
+    pub lsp: Option<crate::config::types::LspConfigToml>,
 
     /// When set to `true`, `AgentReasoning` events will be hidden from the
     /// UI/output. Defaults to `false`.
@@ -1446,6 +1453,7 @@ impl Config {
                     trace_exporter,
                 }
             },
+            lsp: cfg.lsp.unwrap_or_default().into(),
         };
         Ok(config)
     }
@@ -3222,6 +3230,7 @@ model_verbosity = "high"
                 animations: true,
                 show_tooltips: true,
                 otel: OtelConfig::default(),
+                lsp: crate::config::types::LspConfig::default(),
             },
             o3_profile_config
         );
@@ -3305,6 +3314,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            lsp: crate::config::types::LspConfig::default(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3403,6 +3413,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            lsp: crate::config::types::LspConfig::default(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3487,6 +3498,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            lsp: crate::config::types::LspConfig::default(),
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

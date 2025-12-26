@@ -17,6 +17,124 @@ use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LspServerConfigToml {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LspConfigToml {
+    /// Whether to include a diagnostics summary in the model prompt each turn.
+    #[serde(default)]
+    pub prompt_diagnostics: bool,
+
+    /// Maximum number of diagnostics to include in the prompt summary.
+    #[serde(default = "default_lsp_max_prompt_diagnostics")]
+    pub max_prompt_diagnostics: usize,
+
+    /// Maximum number of diagnostics returned by `lsp_diagnostics` by default.
+    #[serde(default = "default_lsp_max_tool_diagnostics")]
+    pub max_tool_diagnostics: usize,
+
+    /// Max file size in bytes to send to the language server.
+    #[serde(default = "default_lsp_max_file_bytes")]
+    pub max_file_bytes: usize,
+
+    /// Globs to ignore when watching files for updates (wildmatch syntax).
+    #[serde(default)]
+    pub ignored_globs: Vec<String>,
+
+    /// Optional per-language server overrides keyed by LSP language id (e.g. "rust", "go").
+    #[serde(default)]
+    pub servers: HashMap<String, LspServerConfigToml>,
+}
+
+impl Default for LspConfigToml {
+    fn default() -> Self {
+        Self {
+            prompt_diagnostics: false,
+            max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
+            max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            max_file_bytes: default_lsp_max_file_bytes(),
+            ignored_globs: Vec::new(),
+            servers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspConfig {
+    pub prompt_diagnostics: bool,
+    pub max_prompt_diagnostics: usize,
+    pub max_tool_diagnostics: usize,
+    pub manager: codex_lsp::LspManagerConfig,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        let manager = codex_lsp::LspManagerConfig {
+            // Manager defaults enabled=false; we gate enablement via `[features].lsp`.
+            enabled: false,
+            ..Default::default()
+        };
+        Self {
+            prompt_diagnostics: false,
+            max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
+            max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            manager,
+        }
+    }
+}
+
+impl From<LspConfigToml> for LspConfig {
+    fn from(toml: LspConfigToml) -> Self {
+        let mut manager = codex_lsp::LspManagerConfig {
+            enabled: false,
+            max_file_bytes: toml.max_file_bytes,
+            ..Default::default()
+        };
+        if !toml.ignored_globs.is_empty() {
+            manager.ignored_globs = toml.ignored_globs.clone();
+        }
+        manager.servers = toml
+            .servers
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    codex_lsp::ServerConfig {
+                        command: v.command,
+                        args: v.args,
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            prompt_diagnostics: toml.prompt_diagnostics,
+            max_prompt_diagnostics: toml.max_prompt_diagnostics,
+            max_tool_diagnostics: toml.max_tool_diagnostics,
+            manager,
+        }
+    }
+}
+
+fn default_lsp_max_prompt_diagnostics() -> usize {
+    10
+}
+
+fn default_lsp_max_tool_diagnostics() -> usize {
+    200
+}
+
+fn default_lsp_max_file_bytes() -> usize {
+    512 * 1024
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
     #[serde(flatten)]

@@ -279,6 +279,19 @@ impl ToolsConfig {
             SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "plan_mode"
         );
         let allow_subagent_tools = !matches!(session_source, SessionSource::SubAgent(_));
+        let mut experimental_supported_tools = model_family.experimental_supported_tools.clone();
+        if features.enabled(Feature::Lsp) {
+            for name in [
+                "lsp_diagnostics",
+                "lsp_definition",
+                "lsp_references",
+                "lsp_document_symbols",
+            ] {
+                if !experimental_supported_tools.iter().any(|t| t == name) {
+                    experimental_supported_tools.push(name.to_string());
+                }
+            }
+        }
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -318,7 +331,7 @@ impl ToolsConfig {
             include_spawn_subagent_tool: allow_subagent_tools,
             include_spawn_mini_subagent_tool: allow_subagent_tools
                 && features.enabled(Feature::MiniSubagents),
-            experimental_supported_tools: model_family.experimental_supported_tools.clone(),
+            experimental_supported_tools,
         }
     }
 }
@@ -1209,6 +1222,175 @@ fn create_read_file_tool() -> ToolSpec {
     })
 }
 
+fn create_lsp_diagnostics_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory. Defaults to the session working directory.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional file path (absolute or relative to root). When omitted, returns diagnostics for all tracked files."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "max_results".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum number of diagnostics to return (defaults to 200).".to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_diagnostics".to_string(),
+        description:
+            "Returns current Language Server Protocol diagnostics for a workspace or file."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_definition_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory. Defaults to the session working directory.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some("File path (absolute or relative to root).".to_string()),
+        },
+    );
+    properties.insert(
+        "line".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based line number.".to_string()),
+        },
+    );
+    properties.insert(
+        "character".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based character offset (UTF-16).".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_definition".to_string(),
+        description: "Finds the definition location for the symbol at a position.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "file_path".to_string(),
+                "line".to_string(),
+                "character".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_references_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory. Defaults to the session working directory.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some("File path (absolute or relative to root).".to_string()),
+        },
+    );
+    properties.insert(
+        "line".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based line number.".to_string()),
+        },
+    );
+    properties.insert(
+        "character".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based character offset (UTF-16).".to_string()),
+        },
+    );
+    properties.insert(
+        "include_declaration".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Whether to include the symbol's declaration in the results.".to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_references".to_string(),
+        description: "Finds references to the symbol at a position.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "file_path".to_string(),
+                "line".to_string(),
+                "character".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_document_symbols_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory. Defaults to the session working directory.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some("File path (absolute or relative to root).".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_document_symbols".to_string(),
+        description: "Returns document symbols for a file (outline).".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["file_path".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_list_dir_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -1567,6 +1749,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::AskUserQuestionHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
+    use crate::tools::handlers::LspHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::PlanApprovalHandler;
@@ -1685,6 +1868,46 @@ pub(crate) fn build_specs(
         let grep_files_handler = Arc::new(GrepFilesHandler);
         builder.push_spec_with_parallel_support(create_grep_files_tool(), true);
         builder.register_handler("grep_files", grep_files_handler);
+    }
+
+    if config
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool.starts_with("lsp_"))
+    {
+        let lsp_handler = Arc::new(LspHandler);
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_diagnostics")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_diagnostics_tool(), true);
+            builder.register_handler("lsp_diagnostics", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_definition")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_definition_tool(), true);
+            builder.register_handler("lsp_definition", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_references")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_references_tool(), true);
+            builder.register_handler("lsp_references", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_document_symbols")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_document_symbols_tool(), true);
+            builder.register_handler("lsp_document_symbols", lsp_handler);
+        }
     }
 
     if config

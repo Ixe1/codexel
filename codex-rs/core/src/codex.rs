@@ -795,6 +795,10 @@ impl Session {
         }
         let state = SessionState::new(session_configuration.clone());
 
+        let mut lsp_manager_config = config.lsp.manager.clone();
+        lsp_manager_config.enabled = config.features.enabled(Feature::Lsp);
+        let lsp_manager = codex_lsp::LspManager::new(lsp_manager_config);
+
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
@@ -808,6 +812,7 @@ impl Session {
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            lsp_manager,
         };
 
         let sess = Arc::new(Session {
@@ -1099,6 +1104,35 @@ impl Session {
                     }
                     None => prelude,
                 });
+        }
+        if self.enabled(Feature::Lsp)
+            && session_configuration
+                .original_config_do_not_use
+                .lsp
+                .prompt_diagnostics
+        {
+            let max = session_configuration
+                .original_config_do_not_use
+                .lsp
+                .max_prompt_diagnostics;
+            let cwd = turn_context.cwd.clone();
+            if let Ok(diags) = self.services.lsp_manager.diagnostics(&cwd, None, max).await
+                && !diags.is_empty()
+            {
+                let summary = crate::lsp_prompt::render_diagnostics_summary(&diags);
+                turn_context.developer_instructions =
+                    Some(match turn_context.developer_instructions.take() {
+                        Some(existing) => {
+                            let existing = existing.trim();
+                            if existing.is_empty() {
+                                summary
+                            } else {
+                                format!("{existing}\n\n{summary}")
+                            }
+                        }
+                        None => summary,
+                    });
+            }
         }
         if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
@@ -3663,6 +3697,10 @@ mod tests {
         let state = SessionState::new(session_configuration.clone());
         let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone()));
 
+        let mut lsp_manager_config = config.lsp.manager.clone();
+        lsp_manager_config.enabled = config.features.enabled(Feature::Lsp);
+        let lsp_manager = codex_lsp::LspManager::new(lsp_manager_config);
+
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
@@ -3676,6 +3714,7 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            lsp_manager,
         };
 
         let turn_context = Session::make_turn_context(
@@ -3758,6 +3797,10 @@ mod tests {
         let state = SessionState::new(session_configuration.clone());
         let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone()));
 
+        let mut lsp_manager_config = config.lsp.manager.clone();
+        lsp_manager_config.enabled = config.features.enabled(Feature::Lsp);
+        let lsp_manager = codex_lsp::LspManager::new(lsp_manager_config);
+
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
@@ -3771,6 +3814,7 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            lsp_manager,
         };
 
         let turn_context = Arc::new(Session::make_turn_context(

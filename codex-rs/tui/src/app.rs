@@ -743,6 +743,62 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::DiagnosticsLoaded(diags) => {
+                self.chat_widget.open_diagnostics_picker(diags);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::DiagnosticsLoadFailed(message) => {
+                self.chat_widget.add_error_message(message);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::OpenFilePreview { path, line } => {
+                let _ = tui.enter_alt_screen();
+                let title = format!("{}", path.display());
+
+                let start = line.saturating_sub(8).max(1);
+                let end = line.saturating_add(8).max(start);
+                let mut rendered = Vec::new();
+                match tokio::fs::File::open(&path).await {
+                    Ok(file) => {
+                        use tokio::io::AsyncBufReadExt as _;
+                        use tokio::io::BufReader;
+                        let mut reader = BufReader::new(file);
+                        let mut idx = 0u32;
+                        let mut buf = String::new();
+                        loop {
+                            buf.clear();
+                            let bytes = reader.read_line(&mut buf).await.unwrap_or(0);
+                            if bytes == 0 {
+                                break;
+                            }
+                            idx = idx.saturating_add(1);
+                            if idx < start {
+                                continue;
+                            }
+                            if idx > end {
+                                break;
+                            }
+                            let text = buf.trim_end_matches(['\r', '\n']).to_string();
+                            let gutter = format!("{idx:>5} ");
+                            let line_text = if idx == line {
+                                text.cyan().bold()
+                            } else {
+                                text.into()
+                            };
+                            rendered.push(vec![gutter.dim(), line_text].into());
+                        }
+                        if rendered.is_empty() {
+                            rendered.push("No preview available.".italic().into());
+                        }
+                    }
+                    Err(err) => {
+                        rendered.push(format!("Failed to open file: {err}").red().into());
+                    }
+                }
+
+                self.overlay = Some(Overlay::new_static_with_lines(rendered, title));
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::StartFileSearch(query) => {
                 if !query.is_empty() {
                     self.file_search.on_user_query(query);

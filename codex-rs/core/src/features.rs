@@ -93,6 +93,8 @@ pub enum Feature {
     Tui2,
     /// Enable discovery and injection of skills.
     Skills,
+    /// Enable Language Server Protocol integration (diagnostics + navigation).
+    Lsp,
     /// Allow the agent to spawn a read-only mini-model subagent.
     MiniSubagents,
 }
@@ -408,6 +410,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "skills",
         stage: Stage::Experimental,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::Lsp,
+        key: "lsp",
+        stage: Stage::Experimental,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Tui2,

@@ -2801,17 +2801,17 @@ mod tests {
         type_chars_humanlike(&mut composer, &['/', 'd', 'i']);
         let (_res, _redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(composer.textarea.text(), "/diff ");
+        assert_eq!(composer.textarea.text(), "/diagnostics ");
 
         // Press Enter: should dispatch the command, not submit literal text.
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
-            InputResult::Command(cmd) => assert_eq!(cmd.command(), "diff"),
+            InputResult::Command(cmd) => assert_eq!(cmd.command(), "diagnostics"),
             InputResult::Submitted(text) => {
                 panic!("expected command dispatch after Tab completion, got literal submit: {text}")
             }
-            InputResult::None => panic!("expected Command result for '/diff'"),
+            InputResult::None => panic!("expected Command result for '/diagnostics'"),
         }
         assert!(composer.textarea.is_empty());
     }

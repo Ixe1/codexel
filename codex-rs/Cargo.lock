@@ -998,6 +998,7 @@ dependencies = [
  "codex-feedback",
  "codex-file-search",
  "codex-login",
+ "codex-lsp",
  "codex-protocol",
  "codex-rmcp-client",
  "codex-utils-absolute-path",
@@ -1274,6 +1275,7 @@ dependencies = [
  "codex-file-search",
  "codex-git",
  "codex-keyring-store",
+ "codex-lsp",
  "codex-otel",
  "codex-protocol",
  "codex-rmcp-client",
@@ -1537,6 +1539,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-lsp"
+version = "0.1.4"
+dependencies = [
+ "anyhow",
+ "notify",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "url",
+ "which",
+ "wildmatch",
+]
+
+[[package]]
 name = "codex-mcp-server"
 version = "0.1.4"
 dependencies = [
@@ -1717,6 +1736,7 @@ dependencies = [
  "codex-feedback",
  "codex-file-search",
  "codex-login",
+ "codex-lsp",
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-windows-sandbox",
@@ -1785,6 +1805,7 @@ dependencies = [
  "codex-feedback",
  "codex-file-search",
  "codex-login",
+ "codex-lsp",
  "codex-protocol",
  "codex-tui",
  "codex-utils-absolute-path",

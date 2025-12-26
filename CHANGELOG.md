@@ -16,6 +16,7 @@ edited between the markers.
 - Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
 - Plan Mode: switch `/plan` exploration to mini subagents; add `mini_subagent_*` config and deprecate `explore_model*`.
 - Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
+- Experimental: add LSP integration (diagnostics + definition/references/symbols) and `/diagnostics` in TUIs.
 - Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
 
 ### Details
@@ -26,6 +27,7 @@ edited between the markers.
 - Fix rust-ci job if expressions
 - Fix workflows: avoid secrets in if
 - Fix app-server OverrideTurnContext init
+- Fix subagent badges
 
 #### Documentation
 - docs: keep README ASCII-only
@@ -45,6 +47,7 @@ edited between the markers.
 - plan: refine plan mode + variants prompts
 - plan: allow web search in /plan
 - Plan mode: add plan_explore subagent exploration
+- Plan exploration: mini subagents + mini_subagent_* config
 
 #### Branding & Packaging
 - codex-cli: bump codexel npm version to 0.1.3

@@ -53,11 +53,36 @@ Supported features:
 | `tui2`                                |  false  | Experimental | Use the experimental TUI v2 (viewport) implementation |
 | `skills`                              |  false  | Experimental | Enable discovery and injection of skills              |
 | `mini_subagents`                      |  true   | Beta         | Allow the agent to spawn read-only mini subagents (`spawn_mini_subagent`) |
+| `lsp`                                 |  false  | Experimental | Enable Language Server Protocol diagnostics and navigation |
 
 Notes:
 
 - Omit a key to accept its default.
 - Legacy booleans such as `experimental_use_exec_command_tool`, `experimental_use_unified_exec_tool`, `include_apply_patch_tool`, and similar `experimental_use_*` keys are deprecated; setting the corresponding `[features].<key>` avoids repeated warnings.
+
+## LSP
+
+Enable LSP support with:
+
+```toml
+[features]
+lsp = true
+```
+
+Optional configuration:
+
+```toml
+[lsp]
+prompt_diagnostics = false
+max_prompt_diagnostics = 10
+max_tool_diagnostics = 200
+max_file_bytes = 524288
+ignored_globs = ["**/target/**", "**/node_modules/**", "**/.git/**"]
+
+[lsp.servers.rust]
+command = "rust-analyzer"
+args = []
+```
 
 ## Model selection
 

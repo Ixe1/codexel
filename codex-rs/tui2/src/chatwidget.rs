@@ -11,6 +11,7 @@ use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
+use codex_core::features::Feature;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::models_manager::manager::ModelsManager;
@@ -299,6 +300,7 @@ pub(crate) struct ChatWidget {
     active_cell: Option<Box<dyn HistoryCell>>,
     active_subagent_group: Option<Arc<Mutex<SubAgentToolCallGroupCell>>>,
     config: Config,
+    lsp_manager: Option<codex_lsp::LspManager>,
     model_family: ModelFamily,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
@@ -1593,6 +1595,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut config = config;
         config.model = Some(model_slug.clone());
+        let lsp_manager = build_lsp_manager(&config);
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
@@ -1614,6 +1617,7 @@ impl ChatWidget {
             active_cell: None,
             active_subagent_group: None,
             config,
+            lsp_manager,
             model_family,
             auth_manager,
             models_manager,
@@ -1679,6 +1683,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
+        let lsp_manager = build_lsp_manager(&config);
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
@@ -1700,6 +1705,7 @@ impl ChatWidget {
             active_cell: None,
             active_subagent_group: None,
             config,
+            lsp_manager,
             model_family,
             auth_manager,
             models_manager,
@@ -1937,6 +1943,9 @@ impl ChatWidget {
             }
             SlashCommand::Status => {
                 self.add_status_output();
+            }
+            SlashCommand::Diagnostics => {
+                self.open_diagnostics();
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -4164,6 +4173,92 @@ impl ChatWidget {
         );
         RenderableItem::Owned(Box::new(flex))
     }
+
+    fn open_diagnostics(&mut self) {
+        let Some(lsp) = self.lsp_manager.clone() else {
+            self.add_error_message(
+                "LSP is disabled. Enable `[features].lsp = true` in config.toml.".to_string(),
+            );
+            return;
+        };
+
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            match lsp.diagnostics(&cwd, None, 200).await {
+                Ok(diags) => tx.send(AppEvent::DiagnosticsLoaded(diags)),
+                Err(err) => tx.send(AppEvent::DiagnosticsLoadFailed(format!(
+                    "Failed to fetch diagnostics: {err:#}",
+                ))),
+            }
+        });
+    }
+
+    pub(crate) fn open_diagnostics_picker(&mut self, diags: Vec<codex_lsp::Diagnostic>) {
+        use crate::bottom_pane::SelectionItem;
+        use crate::bottom_pane::SelectionViewParams;
+        use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+        use crate::render::renderable::ColumnRenderable;
+
+        let mut items = Vec::new();
+        for diag in diags {
+            let path = PathBuf::from(&diag.path);
+            let line = diag.range.start.line;
+            let character = diag.range.start.character;
+            let severity = diag
+                .severity
+                .map(|s| format!("{s:?}"))
+                .unwrap_or_else(|| "Unknown".to_string());
+            let name = format!("{severity} {}:{line}:{character}", path.display());
+            let message = diag.message.clone();
+            let search_value = Some(format!(
+                "{} {} {message}",
+                path.display(),
+                severity.to_ascii_lowercase()
+            ));
+
+            items.push(SelectionItem {
+                name,
+                description: Some(message),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenFilePreview {
+                        path: path.clone(),
+                        line,
+                    });
+                })],
+                dismiss_on_select: true,
+                search_value,
+                ..Default::default()
+            });
+        }
+
+        if items.is_empty() {
+            self.add_info_message("No diagnostics.".to_string(), None);
+            return;
+        }
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Diagnostics".bold()));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Search diagnostics…".to_string()),
+            ..Default::default()
+        });
+        self.request_redraw();
+    }
+}
+
+fn build_lsp_manager(config: &Config) -> Option<codex_lsp::LspManager> {
+    if !config.features.enabled(Feature::Lsp) {
+        return None;
+    }
+    let mut lsp_config = config.lsp.manager.clone();
+    lsp_config.enabled = true;
+    Some(codex_lsp::LspManager::new(lsp_config))
 }
 
 impl Drop for ChatWidget {

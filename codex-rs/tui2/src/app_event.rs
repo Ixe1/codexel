@@ -5,6 +5,7 @@ use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_file_search::FileMatch;
+use codex_lsp::Diagnostic;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
@@ -62,6 +63,18 @@ pub(crate) enum AppEvent {
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
+
+    /// Result of fetching current LSP diagnostics for a workspace.
+    DiagnosticsLoaded(Vec<Diagnostic>),
+
+    /// Fetching LSP diagnostics failed.
+    DiagnosticsLoadFailed(String),
+
+    /// Open an in-app file preview at the requested location.
+    OpenFilePreview {
+        path: PathBuf,
+        line: u32,
+    },
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 

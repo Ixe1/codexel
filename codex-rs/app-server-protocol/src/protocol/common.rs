@@ -287,6 +287,22 @@ client_request_definitions! {
         params: FuzzyFileSearchParams,
         response: FuzzyFileSearchResponse,
     },
+    LspDiagnosticsGet => "lsp/diagnostics/get" {
+        params: v2::LspDiagnosticsGetParams,
+        response: v2::LspDiagnosticsGetResponse,
+    },
+    LspDefinition => "lsp/definition" {
+        params: v2::LspDefinitionParams,
+        response: v2::LspDefinitionResponse,
+    },
+    LspReferences => "lsp/references" {
+        params: v2::LspReferencesParams,
+        response: v2::LspReferencesResponse,
+    },
+    LspDocumentSymbols => "lsp/documentSymbols" {
+        params: v2::LspDocumentSymbolsParams,
+        response: v2::LspDocumentSymbolsResponse,
+    },
     /// Execute a command (argv vector) under the server's sandbox.
     ExecOneOffCommand {
         params: v1::ExecOneOffCommandParams,
@@ -522,6 +538,7 @@ server_notification_definitions! {
     TurnStarted => "turn/started" (v2::TurnStartedNotification),
     TurnCompleted => "turn/completed" (v2::TurnCompletedNotification),
     TurnDiffUpdated => "turn/diff/updated" (v2::TurnDiffUpdatedNotification),
+    LspDiagnosticsUpdated => "lsp/diagnostics/updated" (v2::LspDiagnosticsUpdatedNotification),
     TurnPlanUpdated => "turn/plan/updated" (v2::TurnPlanUpdatedNotification),
     ItemStarted => "item/started" (v2::ItemStartedNotification),
     ItemCompleted => "item/completed" (v2::ItemCompletedNotification),

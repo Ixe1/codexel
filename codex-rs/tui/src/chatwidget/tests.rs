@@ -551,6 +551,7 @@ async fn make_chatwidget_manual(
         bottom_pane: bottom,
         active_cell: None,
         config: cfg.clone(),
+        lsp_manager: None,
         model_family: ModelsManager::construct_model_family_offline(&resolved_model, &cfg),
         auth_manager: auth_manager.clone(),
         models_manager: Arc::new(ModelsManager::new(auth_manager)),
