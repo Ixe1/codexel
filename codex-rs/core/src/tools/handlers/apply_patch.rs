@@ -10,7 +10,9 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
+use crate::lsp_prompt::render_diagnostics_summary;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -26,6 +28,9 @@ use crate::tools::sandboxing::ToolCtx;
 use crate::tools::spec::ApplyPatchToolArgs;
 use crate::tools::spec::JsonSchema;
 use async_trait::async_trait;
+use codex_apply_patch::ApplyPatchAction;
+use codex_lsp::Diagnostic;
+use codex_lsp::DiagnosticSeverity;
 
 pub struct ApplyPatchHandler;
 
@@ -131,6 +136,13 @@ impl ToolHandler for ApplyPatchHandler {
                             Some(&tracker),
                         );
                         let content = emitter.finish(event_ctx, out).await?;
+                        let content = append_post_apply_patch_diagnostics(
+                            &content,
+                            session.as_ref(),
+                            turn.as_ref(),
+                            &apply.action,
+                        )
+                        .await;
                         Ok(ToolOutput::Function {
                             content,
                             content_items: None,
@@ -218,6 +230,9 @@ pub(crate) async fn intercept_apply_patch(
                     let event_ctx =
                         ToolEventCtx::new(session, turn, call_id, tracker.as_ref().copied());
                     let content = emitter.finish(event_ctx, out).await?;
+                    let content =
+                        append_post_apply_patch_diagnostics(&content, session, turn, &apply.action)
+                            .await;
                     Ok(Some(ToolOutput::Function {
                         content,
                         content_items: None,
@@ -341,4 +356,79 @@ It is important to remember:
             additional_properties: Some(false.into()),
         },
     })
+}
+
+async fn append_post_apply_patch_diagnostics(
+    content: &str,
+    session: &Session,
+    turn: &TurnContext,
+    action: &ApplyPatchAction,
+) -> String {
+    if !session.enabled(Feature::Lsp) || action.is_empty() {
+        return content.to_string();
+    }
+
+    let cwd = turn.cwd.clone();
+    let mut changed_paths: Vec<_> = action
+        .changes()
+        .keys()
+        .filter(|path| path.starts_with(&cwd))
+        .cloned()
+        .collect();
+    // Avoid doing too much LSP work for very large patches.
+    changed_paths.truncate(10);
+    if changed_paths.is_empty() {
+        return content.to_string();
+    }
+
+    let mut existing_paths = Vec::with_capacity(changed_paths.len());
+    for path in changed_paths {
+        if tokio::fs::metadata(&path).await.is_ok() {
+            existing_paths.push(path);
+        }
+    }
+    if existing_paths.is_empty() {
+        return content.to_string();
+    }
+
+    let lsp = session.services.lsp_manager.clone();
+    // Best-effort: "touch" changed files so servers see them and can publish diagnostics.
+    for path in &existing_paths {
+        let _ = lsp.document_symbols(&cwd, path).await;
+    }
+
+    let max_per_file = 50usize;
+    let mut diags = Vec::<Diagnostic>::new();
+    // LSP servers often publish diagnostics asynchronously, sometimes a few seconds after open/change.
+    // Bound the wait so apply_patch doesn't hang indefinitely.
+    for _ in 0..10 {
+        diags.clear();
+        for path in &existing_paths {
+            if let Ok(mut file_diags) = lsp
+                .diagnostics(&cwd, Some(path.as_path()), max_per_file)
+                .await
+            {
+                diags.append(&mut file_diags);
+            }
+        }
+
+        diags.retain(|d| {
+            matches!(
+                d.severity,
+                Some(DiagnosticSeverity::Error | DiagnosticSeverity::Warning)
+            )
+        });
+        if !diags.is_empty() {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    if diags.is_empty() {
+        return content.to_string();
+    }
+
+    let summary = render_diagnostics_summary(&diags);
+    format!("{content}\n\n{summary}")
 }

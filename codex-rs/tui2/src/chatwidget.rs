@@ -321,6 +321,7 @@ pub(crate) struct ChatWidget {
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
     pending_lsp_tool_calls: HashMap<String, PendingLspToolCall>,
+    pending_apply_patch_calls: HashSet<String>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     task_complete_pending: bool,
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
@@ -1081,12 +1082,31 @@ impl ChatWidget {
 
     fn on_raw_response_item(&mut self, ev: RawResponseItemEvent) {
         match ev.item {
+            ResponseItem::CustomToolCall { name, call_id, .. } => {
+                if name == "apply_patch" {
+                    self.pending_apply_patch_calls.insert(call_id);
+                }
+            }
+            ResponseItem::CustomToolCallOutput { call_id, output } => {
+                if self.pending_apply_patch_calls.remove(&call_id) {
+                    if let Some(idx) = output.find("## LSP diagnostics") {
+                        self.flush_answer_stream_with_separator();
+                        self.flush_active_cell();
+                        self.add_info_message(output[idx..].to_string(), None);
+                        self.request_redraw();
+                    }
+                }
+            }
             ResponseItem::FunctionCall {
                 name,
                 arguments,
                 call_id,
                 ..
             } => {
+                if name == "apply_patch" {
+                    self.pending_apply_patch_calls.insert(call_id);
+                    return;
+                }
                 if !name.starts_with("lsp_") {
                     return;
                 }
@@ -1100,6 +1120,15 @@ impl ChatWidget {
                 );
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
+                if self.pending_apply_patch_calls.remove(&call_id) {
+                    if let Some(idx) = output.content.find("## LSP diagnostics") {
+                        self.flush_answer_stream_with_separator();
+                        self.flush_active_cell();
+                        self.add_info_message(output.content[idx..].to_string(), None);
+                        self.request_redraw();
+                    }
+                    return;
+                }
                 let Some(call) = self.pending_lsp_tool_calls.remove(&call_id) else {
                     return;
                 };
@@ -1705,6 +1734,7 @@ impl ChatWidget {
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             pending_lsp_tool_calls: HashMap::new(),
+            pending_apply_patch_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1794,6 +1824,7 @@ impl ChatWidget {
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             pending_lsp_tool_calls: HashMap::new(),
+            pending_apply_patch_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,

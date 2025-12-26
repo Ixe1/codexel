@@ -534,6 +534,7 @@ async fn make_chatwidget_manual(
         running_commands: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
         pending_lsp_tool_calls: HashMap::new(),
+        pending_apply_patch_calls: HashSet::new(),
         last_unified_wait: None,
         task_complete_pending: false,
         mcp_startup_status: None,

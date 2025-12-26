@@ -749,6 +749,9 @@ async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<()> {
                 "definition": { "dynamicRegistration": false },
                 "references": { "dynamicRegistration": false },
                 "documentSymbol": { "dynamicRegistration": false },
+                // Some servers (notably `typescript-language-server`) only publish diagnostics if
+                // the client advertises `textDocument.publishDiagnostics` support.
+                "publishDiagnostics": { "relatedInformation": true },
                 "synchronization": { "didSave": true }
             },
             "workspace": { "workspaceFolders": true }
