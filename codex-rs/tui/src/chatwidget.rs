@@ -500,7 +500,9 @@ impl ChatWidget {
                 self.flush_answer_stream_with_separator();
             }
 
-            if self.active_cell.is_some() || !self.running_commands.is_empty() {
+            self.flush_completed_active_cell_if_needed();
+
+            if self.active_cell_is_in_progress() || !self.running_commands.is_empty() {
                 self.resume_had_in_progress_tools = true;
                 self.finalize_turn();
             }
@@ -648,6 +650,7 @@ impl ChatWidget {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         self.flush_wait_cell();
+        self.flush_completed_active_cell_if_needed();
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
@@ -663,6 +666,16 @@ impl ChatWidget {
         });
 
         self.maybe_show_pending_rate_limit_prompt();
+    }
+
+    fn on_task_complete_replay(&mut self) {
+        self.flush_answer_stream_with_separator();
+        self.flush_wait_cell();
+        self.flush_completed_active_cell_if_needed();
+        self.bottom_pane.set_task_running(false);
+        self.running_commands.clear();
+        self.suppressed_exec_calls.clear();
+        self.last_unified_wait = None;
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -2239,6 +2252,45 @@ impl ChatWidget {
         }
     }
 
+    fn active_cell_is_in_progress(&self) -> bool {
+        let Some(cell) = self.active_cell.as_ref() else {
+            return false;
+        };
+
+        if cell
+            .as_any()
+            .downcast_ref::<history_cell::UnifiedExecWaitCell>()
+            .is_some()
+        {
+            return true;
+        }
+        if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>() {
+            return exec.is_active();
+        }
+        if let Some(tool) = cell
+            .as_any()
+            .downcast_ref::<history_cell::McpToolCallCell>()
+        {
+            return tool.is_active();
+        }
+        if let Some(tool) = cell.as_any().downcast_ref::<SubAgentToolCallGroupCell>() {
+            return !tool.is_complete();
+        }
+
+        false
+    }
+
+    fn flush_completed_active_cell_if_needed(&mut self) -> bool {
+        if self.active_cell.is_none() {
+            return false;
+        }
+        if self.active_cell_is_in_progress() {
+            return false;
+        }
+        self.flush_active_cell();
+        true
+    }
+
     // Only flush a live wait cell here; other active cells must finalize via their end events.
     fn flush_wait_cell(&mut self) {
         // Wait cells are transient: convert them into "(waited)" history entries if present.
@@ -2414,10 +2466,14 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) if !from_replay => self.on_task_started(),
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) if !from_replay => {
-                self.on_task_complete(last_agent_message)
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                if from_replay {
+                    self.on_task_complete_replay();
+                } else {
+                    self.on_task_complete(last_agent_message);
+                }
             }
-            EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_) => {}
+            EventMsg::TaskStarted(_) => {}
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);

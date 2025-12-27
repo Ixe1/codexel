@@ -479,9 +479,12 @@ impl ChatWidget {
                 self.flush_answer_stream_with_separator();
             }
 
-            if self.active_cell.is_some()
+            self.flush_completed_active_cell_if_needed();
+            self.clear_completed_subagent_group_if_needed();
+
+            if self.active_cell_is_in_progress()
                 || !self.running_commands.is_empty()
-                || self.active_subagent_group.is_some()
+                || self.active_subagent_group_is_in_progress()
             {
                 self.resume_had_in_progress_tools = true;
                 self.finalize_turn();
@@ -629,6 +632,7 @@ impl ChatWidget {
     fn on_task_complete(&mut self, last_agent_message: Option<String>) {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
+        self.flush_completed_active_cell_if_needed();
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
@@ -644,6 +648,15 @@ impl ChatWidget {
         });
 
         self.maybe_show_pending_rate_limit_prompt();
+    }
+
+    fn on_task_complete_replay(&mut self) {
+        self.flush_answer_stream_with_separator();
+        self.flush_completed_active_cell_if_needed();
+        self.bottom_pane.set_task_running(false);
+        self.running_commands.clear();
+        self.suppressed_exec_calls.clear();
+        self.last_unified_wait = None;
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -2140,6 +2153,58 @@ impl ChatWidget {
         }
     }
 
+    fn active_cell_is_in_progress(&self) -> bool {
+        let Some(cell) = self.active_cell.as_ref() else {
+            return false;
+        };
+
+        if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>() {
+            return exec.is_active();
+        }
+        if let Some(tool) = cell.as_any().downcast_ref::<McpToolCallCell>() {
+            return tool.is_active();
+        }
+        if let Some(tool) = cell.as_any().downcast_ref::<SubAgentToolCallGroupCell>() {
+            return !tool.is_complete();
+        }
+
+        false
+    }
+
+    fn flush_completed_active_cell_if_needed(&mut self) -> bool {
+        if self.active_cell.is_none() {
+            return false;
+        }
+        if self.active_cell_is_in_progress() {
+            return false;
+        }
+        self.flush_active_cell();
+        true
+    }
+
+    fn active_subagent_group_is_in_progress(&self) -> bool {
+        let Some(group) = self.active_subagent_group.as_ref() else {
+            return false;
+        };
+        let group = group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !group.is_complete()
+    }
+
+    fn clear_completed_subagent_group_if_needed(&mut self) -> bool {
+        if !self.active_subagent_group.as_ref().is_some_and(|group| {
+            let group = group
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            group.is_complete()
+        }) {
+            return false;
+        }
+        self.active_subagent_group = None;
+        true
+    }
+
     fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
         self.add_boxed_history(Box::new(cell));
     }
@@ -2287,10 +2352,14 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) if !from_replay => self.on_task_started(),
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) if !from_replay => {
-                self.on_task_complete(last_agent_message)
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                if from_replay {
+                    self.on_task_complete_replay();
+                } else {
+                    self.on_task_complete(last_agent_message);
+                }
             }
-            EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_) => {}
+            EventMsg::TaskStarted(_) => {}
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);

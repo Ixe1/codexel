@@ -296,6 +296,79 @@ async fn resumed_interrupted_session_prompts_before_continuing() {
     );
 }
 
+#[tokio::test]
+async fn resumed_completed_exploring_commands_do_not_prompt() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None).await;
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".to_string(),
+                images: None,
+            }),
+            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                call_id: "call-1".to_string(),
+                process_id: None,
+                turn_id: "turn-1".to_string(),
+                command: vec!["cat".to_string(), "README.md".to_string()],
+                cwd: PathBuf::from("/home/user/project"),
+                parsed_cmd: vec![ParsedCommand::Read {
+                    cmd: "cat README.md".to_string(),
+                    name: "cat".to_string(),
+                    path: PathBuf::from("/home/user/project/README.md"),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+            }),
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "call-1".to_string(),
+                process_id: None,
+                turn_id: "turn-1".to_string(),
+                command: vec!["cat".to_string(), "README.md".to_string()],
+                cwd: PathBuf::from("/home/user/project"),
+                parsed_cmd: vec![ParsedCommand::Read {
+                    cmd: "cat README.md".to_string(),
+                    name: "cat".to_string(),
+                    path: PathBuf::from("/home/user/project/README.md"),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: "contents".to_string(),
+                stderr: String::new(),
+                aggregated_output: "contents".to_string(),
+                exit_code: 0,
+                duration: std::time::Duration::from_millis(5),
+                formatted_output: "contents".to_string(),
+            }),
+            EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: Some("done".to_string()),
+            }),
+        ]),
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(
+        chat.is_normal_backtrack_mode(),
+        "expected resume replay to avoid showing interruption prompt overlay"
+    );
+}
+
 /// Entering review mode uses the hint provided by the review request.
 #[tokio::test]
 async fn entered_review_mode_uses_request_hint() {

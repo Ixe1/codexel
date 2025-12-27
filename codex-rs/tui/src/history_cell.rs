@@ -1241,6 +1241,10 @@ impl McpToolCallCell {
         self.result = Some(Err("interrupted".to_string()));
     }
 
+    pub(crate) fn is_active(&self) -> bool {
+        self.result.is_none()
+    }
+
     fn render_content_block(block: &mcp_types::ContentBlock, width: usize) -> String {
         match block {
             mcp_types::ContentBlock::TextContent(text) => {
