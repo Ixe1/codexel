@@ -1688,6 +1688,132 @@ pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHist
     PlainHistoryCell { lines }
 }
 
+#[derive(Debug)]
+struct LspDiagnosticsEntry {
+    path: PathBuf,
+    line: u32,
+    character: u32,
+    message: String,
+}
+
+#[derive(Debug)]
+struct LspDiagnosticsSummary {
+    errors: usize,
+    warnings: usize,
+    entries: Vec<LspDiagnosticsEntry>,
+}
+
+pub(crate) fn new_lsp_diagnostics_event(text: String, cwd: PathBuf) -> Option<PlainHistoryCell> {
+    let summary = parse_lsp_diagnostics_summary(&text)?;
+    if summary.errors == 0 && summary.warnings == 0 {
+        return None;
+    }
+    if summary.entries.is_empty() {
+        return None;
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let icon = if summary.errors > 0 {
+        "!".red().bold()
+    } else {
+        "!".magenta().bold()
+    };
+    lines.push(vec![icon, " ".into(), "LSP diagnostics".bold()].into());
+
+    let errors = if summary.errors > 0 {
+        summary.errors.to_string().red().bold()
+    } else {
+        summary.errors.to_string().dim()
+    };
+    let warnings = if summary.warnings > 0 {
+        summary.warnings.to_string().magenta().bold()
+    } else {
+        summary.warnings.to_string().dim()
+    };
+    lines.push(
+        vec![
+            "  ".into(),
+            "Errors: ".dim(),
+            errors,
+            ", ".dim(),
+            "Warnings: ".dim(),
+            warnings,
+        ]
+        .into(),
+    );
+    lines.push(Line::from(""));
+
+    for entry in summary.entries {
+        let display_path = display_path_for(&entry.path, &cwd);
+        let loc = format!("{display_path}:{}:{}", entry.line, entry.character);
+        lines.push(vec!["  - ".dim(), loc.dim(), " ".into(), entry.message.into()].into());
+    }
+
+    Some(PlainHistoryCell { lines })
+}
+
+fn parse_lsp_diagnostics_summary(text: &str) -> Option<LspDiagnosticsSummary> {
+    let mut lines = text.lines();
+    let header = lines.next()?.trim();
+    if header != "## LSP diagnostics" && header != "LSP diagnostics" {
+        return None;
+    }
+    let counts = lines.next()?.trim();
+    let errors = parse_lsp_count(counts, "Errors")?;
+    let warnings = parse_lsp_count(counts, "Warnings")?;
+
+    let mut entries = Vec::new();
+    for line in lines {
+        let line = line.trim();
+        let Some(stripped) = line.strip_prefix("- ") else {
+            continue;
+        };
+        if let Some(entry) = parse_lsp_diagnostic_entry(stripped) {
+            entries.push(entry);
+        }
+    }
+
+    Some(LspDiagnosticsSummary {
+        errors,
+        warnings,
+        entries,
+    })
+}
+
+fn parse_lsp_count(line: &str, key: &str) -> Option<usize> {
+    let needle = format!("{key}:");
+    let start = line.find(&needle)? + needle.len();
+    let rest = line.get(start..)?.trim_start();
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+fn parse_lsp_diagnostic_entry(text: &str) -> Option<LspDiagnosticsEntry> {
+    let text = text.trim();
+    let last_colon = text.rfind(':')?;
+    let before_last = text.get(..last_colon)?;
+    let prev_colon = before_last.rfind(':')?;
+
+    let path = PathBuf::from(text.get(..prev_colon)?);
+    let rest = text.get(prev_colon + 1..)?;
+    let (line_str, rest) = rest.split_once(':')?;
+    let line = line_str.trim().parse::<u32>().ok()?;
+
+    let rest = rest.trim_start();
+    let mut it = rest.splitn(2, ' ');
+    let character_str = it.next()?;
+    let character = character_str.trim().parse::<u32>().ok()?;
+    let message = it.next().unwrap_or_default().trim().to_string();
+
+    Some(LspDiagnosticsEntry {
+        path,
+        line,
+        character,
+        message,
+    })
+}
+
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     // Use a hair space (U+200A) to create a subtle, near-invisible separation
     // before the text. VS16 is intentionally omitted to keep spacing tighter

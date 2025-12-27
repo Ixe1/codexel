@@ -1211,13 +1211,17 @@ impl ChatWidget {
                 }
             }
             ResponseItem::CustomToolCallOutput { call_id, output } => {
-                if self.pending_apply_patch_calls.remove(&call_id) {
-                    if let Some(idx) = output.find("## LSP diagnostics") {
-                        self.flush_answer_stream_with_separator();
-                        self.flush_active_cell();
-                        self.add_info_message(output[idx..].to_string(), None);
-                        self.request_redraw();
-                    }
+                if self.pending_apply_patch_calls.remove(&call_id)
+                    && let Some(idx) = output.find("## LSP diagnostics")
+                    && let Some(cell) = history_cell::new_lsp_diagnostics_event(
+                        output[idx..].to_string(),
+                        self.config.cwd.clone(),
+                    )
+                {
+                    self.flush_answer_stream_with_separator();
+                    self.flush_active_cell();
+                    self.add_boxed_history(Box::new(cell));
+                    self.request_redraw();
                 }
             }
             ResponseItem::FunctionCall {
@@ -1244,10 +1248,15 @@ impl ChatWidget {
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 if self.pending_apply_patch_calls.remove(&call_id) {
-                    if let Some(idx) = output.content.find("## LSP diagnostics") {
+                    if let Some(idx) = output.content.find("## LSP diagnostics")
+                        && let Some(cell) = history_cell::new_lsp_diagnostics_event(
+                            output.content[idx..].to_string(),
+                            self.config.cwd.clone(),
+                        )
+                    {
                         self.flush_answer_stream_with_separator();
                         self.flush_active_cell();
-                        self.add_info_message(output.content[idx..].to_string(), None);
+                        self.add_boxed_history(Box::new(cell));
                         self.request_redraw();
                     }
                     return;
