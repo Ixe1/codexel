@@ -46,6 +46,7 @@ edited between the markers.
 - TUI: render apply_patch diagnostics as styled card
 - TUI: avoid false interrupted prompt on resume
 - tui: drop /explore-model; add /experimental to tui2
+- tui: default AskUserQuestion review selection to Submit
 
 #### Core
 - core: strengthen ask_user_question guidance
@@ -83,6 +84,8 @@ edited between the markers.
 - Prefer mini subagents for repo exploration
 - Tighten mini subagent exploration guidance
 - changelog: update unreleased
+- changelog: update unreleased
+- lsp: autodetect PHP and Perl servers
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
