@@ -11,17 +11,20 @@ edited between the markers.
 
 ### Highlights
 
-- Resume: persist interrupted turn history, prompt to continue, and keep resume options usable on small terminals.
-- Agents: add `/explore-model` and cancel spawned subagents on abort.
+- Resume: add turn-resume with persisted interrupted history, plus a guided prompt and usable options on small terminals.
+- Agents: add `/subagent-model`, prefer mini subagents for repo exploration, and cancel spawned subagents on abort.
 - Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
 - Plan Mode: switch `/plan` exploration to mini subagents; add `mini_subagent_*` config and deprecate `explore_model*`.
 - Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
-- Experimental: add LSP integration (diagnostics + definition/references/symbols) and `/diagnostics` in TUIs.
+- Experimental: add LSP diagnostics + navigation (autodetecting common servers like `rust-analyzer`, `gopls`, `pyright-langserver`, and `typescript-language-server`).
 - Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
 
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
+#### Features
+- feat: add experimental LSP diagnostics and navigation
+
 #### Fixes
 - Fix YAML heredoc indentation
 - Fix rust-ci job if expressions
@@ -37,11 +40,16 @@ edited between the markers.
 - tui: update status snapshots for v0.1.4
 - tui: prompt to continue on interrupted resume
 - tui: keep resume options visible on small terminals
+- tui: show LSP toggle in /experimental
+- tui: surface lsp tool calls in history
+- TUI: render apply_patch diagnostics as styled card
+- TUI: avoid false interrupted prompt on resume
 
 #### Core
 - core: strengthen ask_user_question guidance
 - core: add web UI quality bar instructions
 - core: inject SpawnSubagent guidance for exec
+- core: enable LSP prompt diagnostics by default
 
 #### Plan Mode
 - plan: refine plan mode + variants prompts
@@ -64,6 +72,14 @@ edited between the markers.
 - changelog: update unreleased for v0.1.4
 - Add /subagent-model override
 - Add mini/explorer subagents and UI badges
+- codex-lsp: autodetect .cmd language servers on Windows
+- codex-core: prefer LSP tools over rg via developer instructions
+- lsp: normalize paths and clarify tool docs
+- lsp: prewarm workspace and configured servers
+- lsp: prewarm autodetected servers
+- LSP: enable publishDiagnostics and show apply_patch diagnostics in TUI
+- Prefer mini subagents for repo exploration
+- Tighten mini subagent exploration guidance
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
