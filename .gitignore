@@ -68,6 +68,9 @@ coverage/
 personal/
 .codexel/
 
+# lsp smoke files (temporary)
+tmp/lsp-smoke/
+
 # os
 .DS_Store
 Thumbs.db
