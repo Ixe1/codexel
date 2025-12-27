@@ -72,15 +72,16 @@ When LSP tools are available and the file/language is supported:
 - Use `rg` for broad text search (log strings, config keys) and as a fallback if LSP returns errors or empty results unexpectedly.
 - Treat `lsp_document_symbols` as best-effort (it may return empty in some environments).
 - Prefer absolute paths for `root`, `file_path`, and `path`. If a path is relative, it is resolved relative to `root` (which defaults to the session working directory).
+
+For broad repo exploration (mapping an unfamiliar area, finding entry points, summarizing how something works), prefer `spawn_mini_subagent` before doing multiple sequential `lsp_*` calls or reaching for `rg`.
 "#;
 
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
 Use `spawn_subagent` to delegate short, read-only research tasks (repo exploration, tracing control flow, summarizing how something works). Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
 
-Default behavior (strongly preferred):
-- If you need to explore an unfamiliar repo area, treat subagents as your first move.
-- If you expect to do 2+ repo-search/read steps (multiple `lsp_*` calls or `rg` searches, multiple file opens, “I need to find where X is implemented”), spawn 2–3 subagents first, unless you already know the exact file/symbol to read.
-- While subagents run, keep making progress: do one targeted search/read yourself in parallel, then merge results.
+Default behavior:
+- Prefer `spawn_mini_subagent` for quick/cheap repo exploration and mapping.
+- Use `spawn_subagent` when a mini subagent is likely insufficient (complex architecture decisions, subtle concurrency issues, high-stakes security work, or if mini results are missing key context).
 
 When to use it:
 - Broad context gathering (you don't know the entry point yet).
@@ -129,6 +130,11 @@ Use `spawn_mini_subagent` for the same kind of short, read-only research as `spa
 Key properties:
 - This tool defaults to `gpt-5.1-codex-mini` (configurable via `mini_subagent_model`).
 - Mini subagents cannot edit files and cannot ask the user questions.
+
+Default behavior (strongly preferred):
+- For repo exploration (quick mapping, finding relevant files, entry points, or call chains), treat mini subagents as your first move.
+- If you expect to do 2+ repo-search/read steps (multiple `lsp_*` calls or `rg` searches, multiple file opens), spawn 2–3 mini subagents first, unless you already know the exact file/symbol to read.
+- While mini subagents run, keep making progress with one targeted local search/read in parallel, then merge results.
 
 When to use it:
 - Quick repo mapping (find relevant files, entry points, call chains).
