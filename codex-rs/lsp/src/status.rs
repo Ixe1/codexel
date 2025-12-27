@@ -36,9 +36,10 @@ pub(crate) fn status_language_ids(
     running: impl Iterator<Item = String>,
 ) -> Vec<String> {
     // Keep this list small and aligned with codex-lsp's autodetect map.
-    const BUILTIN: [&str; 8] = [
+    const BUILTIN: [&str; 9] = [
         "rust",
         "go",
+        "csharp",
         "python",
         "typescript",
         "javascript",

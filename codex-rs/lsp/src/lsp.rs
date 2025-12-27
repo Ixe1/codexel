@@ -43,6 +43,7 @@ fn is_prewarm_language_id(language_id: &str) -> bool {
         language_id,
         "rust"
             | "go"
+            | "csharp"
             | "python"
             | "typescript"
             | "typescriptreact"

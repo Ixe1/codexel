@@ -33,6 +33,23 @@ const INTELEPHENSE_CANDIDATES: [&str; 3] = ["intelephense.cmd", "intelephense.ex
 const INTELEPHENSE_CANDIDATES: [&str; 1] = ["intelephense"];
 
 #[cfg(windows)]
+const CSHARP_LS_CANDIDATES: [&str; 3] = ["csharp-ls.cmd", "csharp-ls.exe", "csharp-ls"];
+#[cfg(not(windows))]
+const CSHARP_LS_CANDIDATES: [&str; 1] = ["csharp-ls"];
+
+#[cfg(windows)]
+const OMNISHARP_CANDIDATES: [&str; 6] = [
+    "OmniSharp.cmd",
+    "OmniSharp.exe",
+    "OmniSharp",
+    "omnisharp.cmd",
+    "omnisharp.exe",
+    "omnisharp",
+];
+#[cfg(not(windows))]
+const OMNISHARP_CANDIDATES: [&str; 2] = ["omnisharp", "OmniSharp"];
+
+#[cfg(windows)]
 const PERL_NAVIGATOR_CANDIDATES: [&str; 6] = [
     "perlnavigator.cmd",
     "perlnavigator.exe",
@@ -84,6 +101,17 @@ fn autodetect_server_with(
             command: path.to_string_lossy().to_string(),
             args: vec!["--stdio".to_string()],
         }),
+        "csharp" => which_best_fn(&CSHARP_LS_CANDIDATES)
+            .map(|path| ServerConfig {
+                command: path.to_string_lossy().to_string(),
+                args: vec!["--stdio".to_string()],
+            })
+            .or_else(|| {
+                which_best_fn(&OMNISHARP_CANDIDATES).map(|path| ServerConfig {
+                    command: path.to_string_lossy().to_string(),
+                    args: vec!["--languageserver".to_string()],
+                })
+            }),
         "perl" => which_best_fn(&PERL_NAVIGATOR_CANDIDATES).map(|path| ServerConfig {
             command: path.to_string_lossy().to_string(),
             args: Vec::new(),
@@ -107,6 +135,7 @@ pub(crate) fn language_id_for_path(path: &Path) -> Option<&'static str> {
         "js" => Some("javascript"),
         "jsx" => Some("javascriptreact"),
         "php" | "phtml" | "php5" | "php7" | "phps" => Some("php"),
+        "cs" | "csproj" | "sln" => Some("csharp"),
         "pl" | "pm" | "t" | "psgi" => Some("perl"),
         "json" => Some("json"),
         "toml" => Some("toml"),
@@ -204,8 +233,11 @@ mod tests {
     }
 
     #[test]
-    fn language_id_for_path_includes_php_and_perl() {
+    fn language_id_for_path_includes_csharp_php_and_perl() {
         let cases = [
+            ("Program.cs", Some("csharp")),
+            ("Project.csproj", Some("csharp")),
+            ("Solution.sln", Some("csharp")),
             ("main.php", Some("php")),
             ("view.PHTML", Some("php")),
             ("legacy.php5", Some("php")),
@@ -229,9 +261,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn autodetect_server_includes_php_and_perl() -> anyhow::Result<()> {
+    fn autodetect_server_includes_csharp_php_and_perl() -> anyhow::Result<()> {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir)?;
+
+        let csharp_ls = dir.join("csharp-ls.cmd");
+        fs::write(&csharp_ls, "@echo off\r\necho ok\r\n")?;
+
+        let omnisharp = dir.join("OmniSharp.cmd");
+        fs::write(&omnisharp, "@echo off\r\necho ok\r\n")?;
 
         let php = dir.join("intelephense.cmd");
         fs::write(&php, "@echo off\r\necho ok\r\n")?;
@@ -240,6 +278,31 @@ mod tests {
         fs::write(&perl, "@echo off\r\necho ok\r\n")?;
 
         let path_list = path_list_for(&dir);
+        let csharp_cfg = autodetect_server_with("csharp", |candidates| {
+            which_best_in(candidates, &path_list, &dir)
+        })
+        .unwrap();
+        assert_eq!(
+            csharp_cfg,
+            ServerConfig {
+                command: csharp_ls.to_string_lossy().to_string(),
+                args: vec!["--stdio".to_string()],
+            }
+        );
+
+        fs::remove_file(&csharp_ls)?;
+        let csharp_cfg = autodetect_server_with("csharp", |candidates| {
+            which_best_in(candidates, &path_list, &dir)
+        })
+        .unwrap();
+        assert_eq!(
+            csharp_cfg,
+            ServerConfig {
+                command: omnisharp.to_string_lossy().to_string(),
+                args: vec!["--languageserver".to_string()],
+            }
+        );
+
         let php_cfg = autodetect_server_with("php", |candidates| {
             which_best_in(candidates, &path_list, &dir)
         })
@@ -270,9 +333,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn autodetect_server_includes_php_and_perl() -> anyhow::Result<()> {
+    fn autodetect_server_includes_csharp_php_and_perl() -> anyhow::Result<()> {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir)?;
+
+        let csharp_ls = dir.join("csharp-ls");
+        fs::write(&csharp_ls, "#!/bin/sh\nexit 0\n")?;
+        make_executable(&csharp_ls)?;
+
+        let omnisharp = dir.join("omnisharp");
+        fs::write(&omnisharp, "#!/bin/sh\nexit 0\n")?;
+        make_executable(&omnisharp)?;
 
         let php = dir.join("intelephense");
         fs::write(&php, "#!/bin/sh\nexit 0\n")?;
@@ -283,6 +354,31 @@ mod tests {
         make_executable(&perl)?;
 
         let path_list = path_list_for(&dir);
+        let csharp_cfg = autodetect_server_with("csharp", |candidates| {
+            which_best_in(candidates, &path_list, &dir)
+        })
+        .unwrap();
+        assert_eq!(
+            csharp_cfg,
+            ServerConfig {
+                command: csharp_ls.to_string_lossy().to_string(),
+                args: vec!["--stdio".to_string()],
+            }
+        );
+
+        fs::remove_file(&csharp_ls)?;
+        let csharp_cfg = autodetect_server_with("csharp", |candidates| {
+            which_best_in(candidates, &path_list, &dir)
+        })
+        .unwrap();
+        assert_eq!(
+            csharp_cfg,
+            ServerConfig {
+                command: omnisharp.to_string_lossy().to_string(),
+                args: vec!["--languageserver".to_string()],
+            }
+        );
+
         let php_cfg = autodetect_server_with("php", |candidates| {
             which_best_in(candidates, &path_list, &dir)
         })

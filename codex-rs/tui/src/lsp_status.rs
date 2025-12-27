@@ -64,9 +64,10 @@ pub(crate) fn render(status: &LspStatus) -> Vec<Line<'static>> {
             2,
         ));
         if let Some((cfg, _)) = &lang.effective
-            && !cfg.args.is_empty() {
-                lines.extend(render_kv("args", &cfg.args.join(" "), 2));
-            }
+            && !cfg.args.is_empty()
+        {
+            lines.extend(render_kv("args", &cfg.args.join(" "), 2));
+        }
 
         if let Some(cfg) = &lang.configured {
             lines.extend(render_kv("configured", &cfg.command, 2));
