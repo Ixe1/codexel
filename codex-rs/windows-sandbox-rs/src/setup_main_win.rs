@@ -111,7 +111,6 @@ enum SetupMode {
     ReadAclsOnly,
 }
 
-
 #[derive(Serialize)]
 struct SandboxUserRecord {
     username: String,

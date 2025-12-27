@@ -82,9 +82,17 @@ ignored_globs = ["**/target/**", "**/node_modules/**", "**/.git/**"]
 [lsp.servers.rust]
 command = "rust-analyzer"
 args = []
+
+[lsp.servers.php]
+command = "intelephense"
+args = ["--stdio"]
+
+[lsp.servers.perl]
+command = "perlnavigator"
+args = []
 ```
 
-If you omit `[lsp.servers.*]`, Codex will try to autodetect common language servers from `PATH` (e.g. `rust-analyzer`, `gopls`, `pyright-langserver`, `typescript-language-server`) and start them as needed.
+If you omit `[lsp.servers.*]`, Codex will try to autodetect common language servers from `PATH` (e.g. `rust-analyzer`, `gopls`, `pyright-langserver`, `typescript-language-server`, `intelephense`, `perlnavigator`) and start them as needed.
 
 ## Model selection
 

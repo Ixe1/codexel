@@ -44,6 +44,8 @@ fn is_prewarm_language_id(language_id: &str) -> bool {
             | "typescriptreact"
             | "javascript"
             | "javascriptreact"
+            | "php"
+            | "perl"
     )
 }
 
@@ -96,7 +98,7 @@ fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<Strin
                 && is_prewarm_language_id(language_id)
             {
                 found.insert(language_id.to_string());
-                if found.len() >= 7 {
+                if found.len() >= 9 {
                     return found;
                 }
             }
