@@ -104,16 +104,13 @@ struct Payload {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 enum SetupMode {
+    #[default]
     Full,
     ReadAclsOnly,
 }
 
-impl Default for SetupMode {
-    fn default() -> Self {
-        Self::Full
-    }
-}
 
 #[derive(Serialize)]
 struct SandboxUserRecord {

@@ -11,6 +11,7 @@ use codex_protocol::openai_models::ModelPreset;
 use crate::bottom_pane::ApprovalRequest;
 use crate::history_cell::HistoryCell;
 
+use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -19,7 +20,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 pub(crate) enum ModelPickerTarget {
     Chat,
     Plan,
-    Explore,
     Subagent,
 }
 
@@ -94,17 +94,16 @@ pub(crate) enum AppEvent {
     /// Update the current plan reasoning effort in the running app and widget.
     UpdatePlanReasoningEffort(Option<ReasoningEffort>),
 
-    /// Update the current explore model slug in the running app and widget.
-    UpdateExploreModel(String),
-
-    /// Update the current explore reasoning effort in the running app and widget.
-    UpdateExploreReasoningEffort(Option<ReasoningEffort>),
-
     /// Update the current subagent model slug in the running app and widget.
     UpdateSubagentModel(String),
 
     /// Update the current subagent reasoning effort in the running app and widget.
     UpdateSubagentReasoningEffort(Option<ReasoningEffort>),
+
+    /// Persist updated feature flags (e.g. via `/experimental`).
+    UpdateFeatureFlags {
+        updates: Vec<(Feature, bool)>,
+    },
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
@@ -114,12 +113,6 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected plan model and reasoning effort to the appropriate config.
     PersistPlanModelSelection {
-        model: String,
-        effort: Option<ReasoningEffort>,
-    },
-
-    /// Persist the selected explore model and reasoning effort to the appropriate config.
-    PersistExploreModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
     },

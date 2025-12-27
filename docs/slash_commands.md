@@ -14,7 +14,6 @@ Control Codex’s behavior during an interactive session with slash commands.
 | --------------- | -------------------------------------------------------------------------- |
 | `/model`        | choose what model and reasoning effort to use                              |
 | `/plan-model`   | choose what model and reasoning effort to use for `/plan`                  |
-| `/explore-model` | choose what model and reasoning effort to use for `/plan` exploration      |
 | `/subagent-model` | choose what model and reasoning effort to use for spawned subagents        |
 | `/approvals`    | choose what Codex can do without approval                                  |
 | `/review`       | review my current changes and find issues                                  |
@@ -40,4 +39,3 @@ Control Codex’s behavior during an interactive session with slash commands.
 ### Notes
 
 - After you approve a `/plan`, Codexel saves it to `.codexel/plan.md` under the session's working directory. `.codexel/` is hidden from the agent's built-in file tools.
-- `/explore-model` configures the model/effort used for `/plan` exploration (mini subagents).

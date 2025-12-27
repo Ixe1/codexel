@@ -29,8 +29,8 @@ use codex_ansi_escape::ansi_escape_line;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
+use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
-#[cfg(target_os = "windows")]
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
@@ -1672,14 +1672,6 @@ impl App {
                 self.config.plan_model_reasoning_effort = effort;
                 self.chat_widget.set_plan_reasoning_effort(effort);
             }
-            AppEvent::UpdateExploreModel(model) => {
-                self.config.explore_model = Some(model.clone());
-                self.chat_widget.set_explore_model(&model);
-            }
-            AppEvent::UpdateExploreReasoningEffort(effort) => {
-                self.config.explore_model_reasoning_effort = effort;
-                self.chat_widget.set_explore_reasoning_effort(effort);
-            }
             AppEvent::UpdateSubagentModel(model) => {
                 self.config.subagent_model = Some(model.clone());
                 self.chat_widget.set_subagent_model(&model);
@@ -1868,45 +1860,6 @@ impl App {
                     }
                 }
             }
-            AppEvent::PersistExploreModelSelection { model, effort } => {
-                let profile = self.active_profile.as_deref();
-                match ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(profile)
-                    .set_mini_subagent_model(Some(model.as_str()), effort)
-                    .apply()
-                    .await
-                {
-                    Ok(()) => {
-                        let mut message = format!("Mini subagent model changed to {model}");
-                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
-                            message.push(' ');
-                            message.push_str(label);
-                        }
-                        message.push_str(" (used for /plan exploration)");
-                        if let Some(profile) = profile {
-                            message.push_str(" for ");
-                            message.push_str(profile);
-                            message.push_str(" profile");
-                        }
-                        self.chat_widget.add_info_message(message, None);
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            error = %err,
-                            "failed to persist mini subagent model selection"
-                        );
-                        if let Some(profile) = profile {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to save mini subagent model for profile `{profile}`: {err}"
-                            ));
-                        } else {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to save default mini subagent model: {err}"
-                            ));
-                        }
-                    }
-                }
-            }
             AppEvent::PersistSubagentModelSelection { model, effort } => {
                 let profile = self.active_profile.as_deref();
                 match ConfigEditsBuilder::new(&self.config.codex_home)
@@ -2003,6 +1956,41 @@ impl App {
                             tx,
                         );
                     }
+                }
+            }
+            AppEvent::UpdateFeatureFlags { updates } => {
+                if updates.is_empty() {
+                    return Ok(true);
+                }
+                let mut builder = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(self.active_profile.as_deref());
+                for (feature, enabled) in &updates {
+                    let feature_key = feature.key();
+                    if *enabled {
+                        // Update the in-memory configs.
+                        self.config.features.enable(*feature);
+                        self.chat_widget.set_feature_enabled(*feature, true);
+                        builder = builder.set_feature_enabled(feature_key, true);
+                    } else {
+                        // Update the in-memory configs.
+                        self.config.features.disable(*feature);
+                        self.chat_widget.set_feature_enabled(*feature, false);
+                        if feature.default_enabled() {
+                            builder = builder.set_feature_enabled(feature_key, false);
+                        } else {
+                            // If the feature already defaults to `false`, drop the key
+                            // so the user doesn't miss it once it becomes globally released.
+                            builder = builder.with_edits(vec![ConfigEdit::ClearPath {
+                                segments: vec!["features".to_string(), feature_key.to_string()],
+                            }]);
+                        }
+                    }
+                }
+                if let Err(err) = builder.apply().await {
+                    tracing::error!(error = %err, "failed to persist feature flags");
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to update experimental features: {err}"
+                    ));
                 }
             }
             AppEvent::SkipNextWorldWritableScan => {

@@ -14,7 +14,6 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     PlanModel,
-    ExploreModel,
     SubagentModel,
     Approvals,
     Experimental,
@@ -61,9 +60,6 @@ impl SlashCommand {
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
-            SlashCommand::ExploreModel => {
-                "choose what model and reasoning effort to use for /plan exploration (mini subagents)"
-            }
             SlashCommand::SubagentModel => {
                 "choose what model and reasoning effort to use for spawned subagents"
             }
@@ -92,7 +88,6 @@ impl SlashCommand {
             | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::PlanModel
-            | SlashCommand::ExploreModel
             | SlashCommand::SubagentModel
             | SlashCommand::Approvals
             | SlashCommand::Experimental

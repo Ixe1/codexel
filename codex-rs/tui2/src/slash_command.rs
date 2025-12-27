@@ -14,9 +14,9 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     PlanModel,
-    ExploreModel,
     SubagentModel,
     Approvals,
+    Experimental,
     Skills,
     Review,
     Plan,
@@ -58,13 +58,11 @@ impl SlashCommand {
             SlashCommand::Diagnostics => "show LSP diagnostics for the current workspace",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
-            SlashCommand::ExploreModel => {
-                "choose what model and reasoning effort to use for /plan exploration (mini subagents)"
-            }
             SlashCommand::SubagentModel => {
                 "choose what model and reasoning effort to use for spawned subagents"
             }
             SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Experimental => "toggle beta features",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
@@ -88,9 +86,9 @@ impl SlashCommand {
             | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::PlanModel
-            | SlashCommand::ExploreModel
             | SlashCommand::SubagentModel
             | SlashCommand::Approvals
+            | SlashCommand::Experimental
             | SlashCommand::Review
             | SlashCommand::Plan
             | SlashCommand::Logout => false,

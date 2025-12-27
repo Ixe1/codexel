@@ -18,8 +18,12 @@ pub fn create_config_summary_entries(config: &Config, model: &str) -> Vec<(&'sta
     if let Some(plan_model) = config.plan_model.as_deref() {
         entries.push(("plan model", plan_model.to_string()));
     }
-    if let Some(explore_model) = config.explore_model.as_deref() {
-        entries.push(("explore model", explore_model.to_string()));
+    if let Some(mini_subagent_model) = config
+        .mini_subagent_model
+        .as_deref()
+        .or(config.explore_model.as_deref())
+    {
+        entries.push(("mini subagent model", mini_subagent_model.to_string()));
     }
     if config.model_provider.wire_api == WireApi::Responses {
         let reasoning_effort = config
@@ -38,12 +42,17 @@ pub fn create_config_summary_entries(config: &Config, model: &str) -> Vec<(&'sta
                 plan_effort.unwrap_or_else(|| "none".to_string()),
             ));
         }
-        if config.explore_model.is_some() || config.explore_model_reasoning_effort.is_some() {
+        if config.mini_subagent_model.is_some()
+            || config.mini_subagent_model_reasoning_effort.is_some()
+            || config.explore_model.is_some()
+            || config.explore_model_reasoning_effort.is_some()
+        {
             let explore_effort = config
-                .explore_model_reasoning_effort
+                .mini_subagent_model_reasoning_effort
+                .or(config.explore_model_reasoning_effort)
                 .map(|effort| effort.to_string());
             entries.push((
-                "explore reasoning effort",
+                "mini subagent reasoning effort",
                 explore_effort.unwrap_or_else(|| "none".to_string()),
             ));
         }
