@@ -15,6 +15,7 @@ edited between the markers.
 - Agents: add `/subagent-model`, prefer mini subagents for repo exploration, and cancel spawned subagents on abort.
 - Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
 - Plan Mode: switch `/plan` exploration to mini subagents; add `mini_subagent_*` config and deprecate `explore_model*`.
+- TUI: remove `/explore-model`; add `/experimental` to TUI2.
 - Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
 - Experimental: add LSP diagnostics + navigation (autodetecting common servers like `rust-analyzer`, `gopls`, `pyright-langserver`, and `typescript-language-server`).
 - Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
@@ -44,6 +45,7 @@ edited between the markers.
 - tui: surface lsp tool calls in history
 - TUI: render apply_patch diagnostics as styled card
 - TUI: avoid false interrupted prompt on resume
+- tui: drop /explore-model; add /experimental to tui2
 
 #### Core
 - core: strengthen ask_user_question guidance
@@ -80,6 +82,7 @@ edited between the markers.
 - LSP: enable publishDiagnostics and show apply_patch diagnostics in TUI
 - Prefer mini subagents for repo exploration
 - Tighten mini subagent exploration guidance
+- changelog: update unreleased
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
