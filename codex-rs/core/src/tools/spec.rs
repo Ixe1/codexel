@@ -134,7 +134,6 @@ Key properties:
 Default behavior (strongly preferred):
 - For repo exploration (quick mapping, finding relevant files, entry points, or call chains), treat mini subagents as your first move.
 - If you expect to do 2+ repo-search/read steps (multiple `lsp_*` calls or `rg` searches, multiple file opens), spawn 2–3 mini subagents first, unless you already know the exact file/symbol to read.
-- While mini subagents run, keep making progress with one targeted local search/read in parallel, then merge results.
 
 When to use it:
 - Quick repo mapping (find relevant files, entry points, call chains).
