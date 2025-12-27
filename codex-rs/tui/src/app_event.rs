@@ -6,6 +6,7 @@ use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_file_search::FileMatch;
 use codex_lsp::Diagnostic;
+use codex_lsp::LspStatus;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
@@ -69,6 +70,12 @@ pub(crate) enum AppEvent {
 
     /// Fetching LSP diagnostics failed.
     DiagnosticsLoadFailed(String),
+
+    /// Result of fetching current LSP server status for a workspace.
+    LspStatusLoaded(LspStatus),
+
+    /// Fetching LSP status failed.
+    LspStatusLoadFailed(String),
 
     /// Open an in-app file preview at the requested location.
     OpenFilePreview {

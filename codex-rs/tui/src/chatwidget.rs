@@ -2159,6 +2159,9 @@ impl ChatWidget {
             SlashCommand::Status => {
                 self.add_status_output();
             }
+            SlashCommand::Lsp => {
+                self.open_lsp_status();
+            }
             SlashCommand::Diagnostics => {
                 self.open_diagnostics();
             }
@@ -4367,6 +4370,26 @@ impl ChatWidget {
                 Ok(diags) => tx.send(AppEvent::DiagnosticsLoaded(diags)),
                 Err(err) => tx.send(AppEvent::DiagnosticsLoadFailed(format!(
                     "Failed to fetch diagnostics: {err:#}",
+                ))),
+            }
+        });
+    }
+
+    fn open_lsp_status(&mut self) {
+        let Some(lsp) = self.lsp_manager.clone() else {
+            self.add_error_message(
+                "LSP is disabled. Enable `[features].lsp = true` in config.toml.".to_string(),
+            );
+            return;
+        };
+
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            match lsp.status(&cwd).await {
+                Ok(status) => tx.send(AppEvent::LspStatusLoaded(status)),
+                Err(err) => tx.send(AppEvent::LspStatusLoadFailed(format!(
+                    "Failed to fetch LSP status: {err:#}",
                 ))),
             }
         });

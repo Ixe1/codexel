@@ -28,6 +28,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Lsp,
     Diagnostics,
     Mcp,
     Logout,
@@ -55,6 +56,7 @@ impl SlashCommand {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Lsp => "show current LSP status (detected/configured/running)",
             SlashCommand::Diagnostics => "show LSP diagnostics for the current workspace",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
@@ -96,6 +98,7 @@ impl SlashCommand {
             | SlashCommand::Mention
             | SlashCommand::Skills
             | SlashCommand::Status
+            | SlashCommand::Lsp
             | SlashCommand::Diagnostics
             | SlashCommand::Mcp
             | SlashCommand::Feedback

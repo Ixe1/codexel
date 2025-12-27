@@ -55,6 +55,7 @@ mod history_cell;
 pub mod insert_history;
 mod key_hint;
 pub mod live_wrap;
+mod lsp_status;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;

@@ -1147,6 +1147,7 @@ dependencies = [
  "codex-exec",
  "codex-execpolicy",
  "codex-login",
+ "codex-lsp",
  "codex-mcp-server",
  "codex-process-hardening",
  "codex-protocol",

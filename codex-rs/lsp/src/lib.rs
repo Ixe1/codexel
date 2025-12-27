@@ -2,6 +2,7 @@ mod jsonrpc;
 mod lsp;
 mod normalize;
 mod servers;
+mod status;
 mod watcher;
 
 pub use crate::lsp::LspManager;
@@ -14,3 +15,7 @@ pub use crate::normalize::Location;
 pub use crate::normalize::Position;
 pub use crate::normalize::Range;
 pub use crate::servers::ServerConfig;
+pub use crate::status::LspLanguageStatus;
+pub use crate::status::LspServerSource;
+pub use crate::status::LspStatus;
+pub use crate::status::render_lsp_status;

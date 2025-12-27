@@ -1593,6 +1593,15 @@ impl App {
                 self.chat_widget.add_error_message(message);
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::LspStatusLoaded(status) => {
+                self.chat_widget
+                    .add_plain_history_lines(crate::lsp_status::render(&status));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::LspStatusLoadFailed(message) => {
+                self.chat_widget.add_error_message(message);
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::OpenFilePreview { path, line } => {
                 let _ = tui.enter_alt_screen();
                 let title = format!("{}", path.display());

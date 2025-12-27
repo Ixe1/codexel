@@ -26,6 +26,8 @@ Control Codex’s behavior during an interactive session with slash commands.
 | `/diff`         | show git diff (including untracked files)                                  |
 | `/mention`      | mention a file                                                             |
 | `/status`       | show current session configuration and token usage                         |
+| `/lsp`          | show current LSP status (detected/configured/running)                      |
+| `/diagnostics`  | show LSP diagnostics for the current workspace                             |
 | `/mcp`          | list configured MCP tools                                                  |
 | `/experimental` | open the experimental menu to enable features from our beta program        |
 | `/skills`       | browse and insert skills (experimental; see [docs/skills.md](./skills.md)) |

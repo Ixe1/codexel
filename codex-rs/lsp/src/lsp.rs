@@ -30,6 +30,10 @@ use crate::normalize::Range;
 use crate::servers::ServerConfig;
 use crate::servers::autodetect_server;
 use crate::servers::language_id_for_path;
+use crate::status::LspStatus;
+use crate::status::effective_server_config;
+use crate::status::normalize_status_root;
+use crate::status::status_language_ids;
 use crate::watcher::ChangeKind;
 use crate::watcher::FileChange;
 use crate::watcher::start_watcher;
@@ -108,7 +112,7 @@ fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<Strin
     found
 }
 
-fn normalize_root_path(root: &Path) -> PathBuf {
+pub(crate) fn normalize_root_path(root: &Path) -> PathBuf {
     let root = if root.is_absolute() {
         root.to_path_buf()
     } else if let Ok(cwd) = std::env::current_dir() {
@@ -337,6 +341,53 @@ impl LspManager {
             .get(&root)
             .context("workspace not initialized")?;
         Ok(ws.collect_diagnostics(path.as_deref(), max_results))
+    }
+
+    pub async fn status(&self, root: &Path) -> anyhow::Result<LspStatus> {
+        let root = normalize_status_root(root);
+        let config = self.inner.config.read().await.clone();
+
+        if config.enabled {
+            self.ensure_workspace(&root).await?;
+        }
+
+        let (workspace_initialized, running_servers) = {
+            let state = self.inner.state.lock().await;
+            match state.workspaces.get(&root) {
+                Some(ws) => (true, ws.servers.keys().cloned().collect::<Vec<String>>()),
+                None => (false, Vec::new()),
+            }
+        };
+
+        let language_ids = status_language_ids(
+            config.servers.keys().cloned(),
+            running_servers.clone().into_iter(),
+        );
+
+        let mut languages = Vec::new();
+        for language_id in language_ids {
+            let running = running_servers.contains(&language_id);
+            let configured = config.servers.get(&language_id);
+            let (configured, autodetected, effective) =
+                effective_server_config(&language_id, configured);
+
+            languages.push(crate::status::LspLanguageStatus {
+                language_id,
+                configured,
+                autodetected,
+                effective,
+                running,
+            });
+        }
+
+        Ok(LspStatus {
+            enabled: config.enabled,
+            root,
+            ignored_globs: config.ignored_globs,
+            max_file_bytes: config.max_file_bytes,
+            workspace_initialized,
+            languages,
+        })
     }
 
     pub async fn subscribe_diagnostics(
