@@ -42,14 +42,35 @@ struct JsonRpcNotification<'a, T> {
     params: Option<T>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct JsonRpcOutgoingResponse {
+    jsonrpc: &'static str,
+    id: u64,
+    result: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonRpcOutgoingError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonRpcOutgoingErrorResponse {
+    jsonrpc: &'static str,
+    id: u64,
+    error: JsonRpcOutgoingError,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct JsonRpcResponse {
     #[serde(rename = "jsonrpc")]
     #[serde(default)]
     _jsonrpc: Option<String>,
     id: u64,
     #[serde(default)]
-    result: Option<Value>,
+    result: Value,
     #[serde(default)]
     error: Option<JsonRpcResponseError>,
 }
@@ -64,7 +85,17 @@ pub(crate) struct JsonRpcResponseError {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(untagged)]
 pub enum IncomingMessage {
-    Response(JsonRpcResponse),
+    Request {
+        #[serde(default)]
+        _jsonrpc: Option<String>,
+        #[serde(rename = "id")]
+        id: u64,
+        #[serde(rename = "method")]
+        method: String,
+        #[serde(default)]
+        #[serde(rename = "params")]
+        params: Option<Value>,
+    },
     Notification {
         #[serde(default)]
         _jsonrpc: Option<String>,
@@ -72,17 +103,7 @@ pub enum IncomingMessage {
         #[serde(default)]
         params: Option<Value>,
     },
-    Request {
-        #[serde(default)]
-        _jsonrpc: Option<String>,
-        #[serde(rename = "id")]
-        _id: u64,
-        #[serde(rename = "method")]
-        _method: String,
-        #[serde(default)]
-        #[serde(rename = "params")]
-        _params: Option<Value>,
-    },
+    Response(JsonRpcResponse),
 }
 
 pub(crate) struct JsonRpcClient {
@@ -142,6 +163,31 @@ impl JsonRpcClient {
         self.write_message(&msg).await
     }
 
+    pub(crate) async fn respond(&self, id: u64, result: Value) -> Result<(), JsonRpcError> {
+        let msg = JsonRpcOutgoingResponse {
+            jsonrpc: "2.0",
+            id,
+            result,
+        };
+        self.write_message(&msg).await
+    }
+
+    pub(crate) async fn respond_method_not_found(
+        &self,
+        id: u64,
+        method: &str,
+    ) -> Result<(), JsonRpcError> {
+        let msg = JsonRpcOutgoingErrorResponse {
+            jsonrpc: "2.0",
+            id,
+            error: JsonRpcOutgoingError {
+                code: -32601,
+                message: format!("method not found: {method}"),
+            },
+        };
+        self.write_message(&msg).await
+    }
+
     async fn write_message<T: Serialize>(&self, msg: &T) -> Result<(), JsonRpcError> {
         let json = serde_json::to_vec(msg)?;
         let mut writer = self.writer.lock().await;
@@ -158,12 +204,9 @@ impl JsonRpcClient {
             IncomingMessage::Response(resp) => {
                 let tx = self.pending.lock().await.remove(&resp.id);
                 if let Some(tx) = tx {
-                    let result = match (resp.result, resp.error) {
-                        (Some(result), None) => Ok(result),
-                        (None, Some(err)) => Err(JsonRpcError::Server(err.message)),
-                        _ => Err(JsonRpcError::Protocol(
-                            "response missing result and error".to_string(),
-                        )),
+                    let result = match resp.error {
+                        Some(err) => Err(JsonRpcError::Server(err.message)),
+                        None => Ok(resp.result),
                     };
                     let _ = tx.send(result);
                 }
@@ -237,11 +280,12 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Result<url::Url, JsonRpcError>
 
 pub(crate) struct JsonRpcPump {
     client: Arc<JsonRpcClient>,
+    root_uri: String,
 }
 
 impl JsonRpcPump {
-    pub(crate) fn new(client: Arc<JsonRpcClient>) -> Self {
-        Self { client }
+    pub(crate) fn new(client: Arc<JsonRpcClient>, root_uri: String) -> Self {
+        Self { client, root_uri }
     }
 
     pub(crate) async fn run<R: AsyncRead + Unpin + Send + 'static>(
@@ -255,8 +299,59 @@ impl JsonRpcPump {
                 IncomingMessage::Notification { method, params, .. } => {
                     let _ = notification_tx.send((method.clone(), params.clone()));
                 }
-                IncomingMessage::Request { .. } => {
-                    // For now, ignore server->client requests (rare for LSP).
+                IncomingMessage::Request {
+                    id, method, params, ..
+                } => {
+                    tracing::debug!("lsp server request: method={method}");
+                    match method.as_str() {
+                        // Commonly used by LSP servers for dynamic registration.
+                        // If the client doesn't respond, many servers will hang during startup.
+                        "client/registerCapability" | "client/unregisterCapability" => {
+                            self.client.respond(*id, Value::Null).await?;
+                        }
+                        // Many servers query config via this request.
+                        // Return `null` for each requested section if we don't have a value.
+                        "workspace/configuration" => {
+                            let items_len = params
+                                .as_ref()
+                                .and_then(|v| v.get("items"))
+                                .and_then(Value::as_array)
+                                .map_or(0, std::vec::Vec::len);
+                            tracing::debug!("lsp workspace/configuration: items_len={items_len}");
+                            self.client
+                                .respond(
+                                    *id,
+                                    Value::Array(
+                                        std::iter::repeat_n(Value::Null, items_len).collect(),
+                                    ),
+                                )
+                                .await?;
+                        }
+                        // Some servers ask for the workspace folders even if they got rootUri.
+                        "workspace/workspaceFolders" => {
+                            self.client
+                                .respond(
+                                    *id,
+                                    serde_json::json!([{
+                                        "uri": self.root_uri,
+                                        "name": "root",
+                                    }]),
+                                )
+                                .await?;
+                        }
+                        // Make this a no-op instead of hanging the server.
+                        "window/showMessageRequest" => {
+                            self.client.respond(*id, Value::Null).await?;
+                        }
+                        // Some servers use this to create progress notifications; respond OK even
+                        // though we don't render progress.
+                        "window/workDoneProgress/create" => {
+                            self.client.respond(*id, Value::Null).await?;
+                        }
+                        other => {
+                            self.client.respond_method_not_found(*id, other).await?;
+                        }
+                    }
                 }
                 IncomingMessage::Response(_) => {}
             }
@@ -270,6 +365,8 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use std::io::Cursor;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
     use tokio::io::BufReader;
 
     #[tokio::test]
@@ -287,5 +384,40 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn responds_to_register_capability_request() {
+        let (mut server_write, pump_read) = tokio::io::duplex(8 * 1024);
+        let (client_write, mut server_read) = tokio::io::duplex(8 * 1024);
+
+        let client = Arc::new(JsonRpcClient::new(Box::new(client_write)));
+        let pump = JsonRpcPump::new(Arc::clone(&client), "file:///tmp".to_string());
+
+        let (notif_tx, _notif_rx) = tokio::sync::mpsc::unbounded_channel();
+        let pump_task = tokio::spawn(async move { pump.run(pump_read, notif_tx).await });
+
+        let req = br#"{"jsonrpc":"2.0","id":7,"method":"client/registerCapability","params":{"registrations":[]}}"#;
+        server_write
+            .write_all(format!("Content-Length: {}\r\n\r\n", req.len()).as_bytes())
+            .await
+            .unwrap();
+        server_write.write_all(req).await.unwrap();
+        server_write.shutdown().await.unwrap();
+        drop(server_write);
+
+        let resp = tokio::time::timeout(Duration::from_secs(5), read_message(&mut server_read))
+            .await
+            .unwrap()
+            .unwrap();
+        match resp {
+            IncomingMessage::Response(resp) => {
+                assert_eq!(resp.id, 7);
+                assert_eq!(resp.result, Value::Null);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        pump_task.abort();
     }
 }

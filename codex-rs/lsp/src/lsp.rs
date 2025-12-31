@@ -336,12 +336,92 @@ impl LspManager {
         let root = normalize_root_path(root);
         self.ensure_workspace(&root).await?;
         let path = path.map(|path| normalize_file_path(&root, path));
+
+        // Best-effort: make sure we have something to report for explicit queries.
+        // Many servers don't proactively publish diagnostics unless a document is opened/updated.
+        if let Some(path) = path.as_deref() {
+            let _ = self.open_or_update(&root, path).await;
+        } else {
+            let _ = self.seed_diagnostics(&root).await;
+        }
+
         let state = self.inner.state.lock().await;
         let ws = state
             .workspaces
             .get(&root)
             .context("workspace not initialized")?;
         Ok(ws.collect_diagnostics(path.as_deref(), max_results))
+    }
+
+    async fn seed_diagnostics(&self, root: &Path) -> anyhow::Result<()> {
+        let root = normalize_root_path(root);
+        let config = self.inner.config.read().await.clone();
+        if !config.enabled {
+            return Ok(());
+        }
+
+        // Only do work if we have no diagnostics yet.
+        {
+            let state = self.inner.state.lock().await;
+            if let Some(ws) = state.workspaces.get(&root)
+                && (!ws.diagnostics.is_empty() || !ws.open_docs.is_empty())
+            {
+                return Ok(());
+            }
+        }
+
+        let mut queue = vec![(root.clone(), 0usize)];
+        let mut seen = 0usize;
+        while let Some((dir, depth)) = queue.pop() {
+            if depth > 4 || seen > 2000 {
+                break;
+            }
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                if seen > 2000 {
+                    break;
+                }
+                seen += 1;
+
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if file_type.is_dir() {
+                    let name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .unwrap_or_default();
+                    if matches!(
+                        name.as_str(),
+                        ".git" | "node_modules" | "target" | "bin" | "obj"
+                    ) {
+                        continue;
+                    }
+                    queue.push((path, depth.saturating_add(1)));
+                    continue;
+                }
+
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_ascii_lowercase);
+                if matches!(ext.as_deref(), Some("cs")) {
+                    self.open_or_update(&root, &path).await?;
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn status(&self, root: &Path) -> anyhow::Result<LspStatus> {
@@ -529,6 +609,40 @@ impl LspManager {
         } else {
             server.did_change(&path, version, &text).await?;
         }
+
+        if let Err(err) = self
+            .refresh_pull_diagnostics(root.clone(), path.clone(), Arc::clone(&server))
+            .await
+        {
+            warn!("lsp pull diagnostics failed: {err:#}");
+        }
+        Ok(())
+    }
+
+    async fn refresh_pull_diagnostics(
+        &self,
+        root: PathBuf,
+        path: PathBuf,
+        server: Arc<ServerState>,
+    ) -> anyhow::Result<()> {
+        let Some(diags) = server.pull_diagnostics(&path).await? else {
+            return Ok(());
+        };
+
+        let path = normalize_path(&path).unwrap_or(path);
+        let update = DiagnosticsUpdate {
+            path: path.to_string_lossy().into_owned(),
+            diagnostics: diags.clone(),
+        };
+        let update_sender = {
+            let mut state = self.inner.state.lock().await;
+            let Some(ws) = state.workspaces.get_mut(&root) else {
+                return Ok(());
+            };
+            ws.diagnostics.insert(path, diags);
+            ws.diag_updates.clone()
+        };
+        let _ = update_sender.send(update);
         Ok(())
     }
 
@@ -630,6 +744,7 @@ struct ServerState {
     client: Arc<JsonRpcClient>,
     _child: Mutex<Child>,
     notifications: tokio::sync::broadcast::Sender<(String, Option<Value>)>,
+    supports_pull_diagnostics: bool,
 }
 
 impl ServerState {
@@ -641,6 +756,13 @@ impl ServerState {
         text: &str,
     ) -> anyhow::Result<()> {
         let uri = file_uri(path)?.to_string();
+        tracing::debug!(
+            "lsp didOpen: uri={} language_id={} version={} bytes={}",
+            uri,
+            language_id,
+            version,
+            text.len()
+        );
         let params = serde_json::json!({
             "textDocument": {
                 "uri": uri,
@@ -713,6 +835,47 @@ impl ServerState {
             .map_err(anyhow::Error::from)?;
         Ok(parse_document_symbols(value))
     }
+
+    async fn pull_diagnostics(&self, path: &Path) -> anyhow::Result<Option<Vec<Diagnostic>>> {
+        if !self.supports_pull_diagnostics {
+            return Ok(None);
+        }
+
+        let uri = file_uri(path)?.to_string();
+        tracing::debug!("lsp pull diagnostics: uri={uri}");
+        let params = serde_json::json!({ "textDocument": { "uri": uri }});
+        let mut backoff = Duration::from_millis(250);
+        for attempt in 0..6u8 {
+            if attempt > 0 {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(4));
+            }
+
+            let value = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .request("textDocument/diagnostic", Some(params.clone())),
+            )
+            .await
+            .context("LSP textDocument/diagnostic timed out")?
+            .map_err(anyhow::Error::from)?;
+
+            let Some(diags) = parse_text_document_diagnostic(path, &value) else {
+                continue;
+            };
+
+            tracing::debug!(
+                "lsp pull diagnostics: attempt={} count={}",
+                attempt,
+                diags.len()
+            );
+            if !diags.is_empty() || attempt == 5 {
+                return Ok(Some(diags));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 async fn start_server(
@@ -727,8 +890,47 @@ async fn start_server(
         .or_else(|| autodetect_server(language_id))
         .with_context(|| format!("no language server configured for '{language_id}'"))?;
 
+    let mut args = server_config.args.clone();
+
+    // `csharp-ls` supports `--solution <path>` and needs a workspace to provide project-level
+    // diagnostics. If we can unambiguously pick a solution file at the workspace root, pass it.
+    if language_id == "csharp" && args.is_empty() {
+        let looks_like_csharp_ls = std::path::Path::new(&server_config.command)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase().starts_with("csharp-ls"))
+            .unwrap_or(false);
+
+        if looks_like_csharp_ls {
+            let mut slns = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(root) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let ext = path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_ascii_lowercase);
+                    if matches!(ext.as_deref(), Some("sln" | "slnx"))
+                        && let Some(name) = path.file_name().and_then(|s| s.to_str())
+                    {
+                        slns.push(name.to_string());
+                    }
+                }
+            }
+            slns.sort();
+            slns.dedup();
+            if slns.len() == 1 {
+                args.push("--solution".to_string());
+                args.push(slns[0].clone());
+            }
+        }
+    }
+
     let mut cmd = Command::new(&server_config.command);
-    cmd.args(&server_config.args)
+    cmd.args(&args)
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -758,7 +960,8 @@ async fn start_server(
 
     let (tx, _) = tokio::sync::broadcast::channel(512);
     let pump_tx = tx.clone();
-    let pump = JsonRpcPump::new(Arc::clone(&client));
+    let root_uri = file_uri(root)?.to_string();
+    let pump = JsonRpcPump::new(Arc::clone(&client), root_uri);
     tokio::spawn(async move {
         let (notif_tx, mut notif_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
@@ -784,20 +987,24 @@ async fn start_server(
         }
     });
 
-    initialize(&client, root).await?;
+    let supports_pull_diagnostics = initialize(&client, root).await?;
 
     Ok(Arc::new(ServerState {
         client,
         _child: Mutex::new(child),
         notifications: tx,
+        supports_pull_diagnostics,
     }))
 }
 
-async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<()> {
+async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<bool> {
     let root_uri = file_uri(root)?.to_string();
+    let root_uri_folder = root_uri.clone();
+    let process_id = std::process::id();
     let params = serde_json::json!({
-        "processId": null,
+        "processId": process_id,
         "rootUri": root_uri,
+        "workspaceFolders": [{ "uri": root_uri_folder, "name": "root" }],
         "capabilities": {
             "textDocument": {
                 "definition": { "dynamicRegistration": false },
@@ -806,17 +1013,31 @@ async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<()> {
                 // Some servers (notably `typescript-language-server`) only publish diagnostics if
                 // the client advertises `textDocument.publishDiagnostics` support.
                 "publishDiagnostics": { "relatedInformation": true },
+                // Some servers (notably `csharp-ls`) support pull diagnostics via
+                // `textDocument/diagnostic` and require the client to advertise this capability.
+                "diagnostic": { "dynamicRegistration": false, "relatedDocumentSupport": true },
                 "synchronization": { "didSave": true }
             },
             "workspace": { "workspaceFolders": true }
         },
         "clientInfo": { "name": "codexel", "version": env!("CARGO_PKG_VERSION") }
     });
-    let _ = client.request::<Value>("initialize", Some(params)).await?;
+    let init_result = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.request::<Value>("initialize", Some(params)),
+    )
+    .await
+    .context("LSP initialize timed out")??;
     client
         .notify::<Value>("initialized", Some(serde_json::json!({})))
         .await?;
-    Ok(())
+
+    let supports_pull_diagnostics = init_result
+        .get("capabilities")
+        .and_then(|caps| caps.get("diagnosticProvider"))
+        .is_some();
+
+    Ok(supports_pull_diagnostics)
 }
 
 fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnostic>)> {
@@ -834,6 +1055,24 @@ fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnostic>
         }
     }
     Some((path, out))
+}
+
+fn parse_text_document_diagnostic(path: &Path, value: &Value) -> Option<Vec<Diagnostic>> {
+    let Value::Object(map) = value else {
+        return None;
+    };
+    if map.get("kind").and_then(Value::as_str) == Some("unchanged") {
+        return None;
+    }
+    let items = map.get("items")?.as_array()?;
+
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(diag) = parse_diagnostic(path, item) {
+            out.push(diag);
+        }
+    }
+    Some(out)
 }
 
 fn parse_diagnostic(path: &Path, v: &Value) -> Option<Diagnostic> {

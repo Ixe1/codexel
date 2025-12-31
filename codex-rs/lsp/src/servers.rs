@@ -104,7 +104,8 @@ fn autodetect_server_with(
         "csharp" => which_best_fn(&CSHARP_LS_CANDIDATES)
             .map(|path| ServerConfig {
                 command: path.to_string_lossy().to_string(),
-                args: vec!["--stdio".to_string()],
+                // `csharp-ls` uses stdio by default and does not accept `--stdio`.
+                args: Vec::new(),
             })
             .or_else(|| {
                 which_best_fn(&OMNISHARP_CANDIDATES).map(|path| ServerConfig {
@@ -286,7 +287,7 @@ mod tests {
             csharp_cfg,
             ServerConfig {
                 command: csharp_ls.to_string_lossy().to_string(),
-                args: vec!["--stdio".to_string()],
+                args: Vec::new(),
             }
         );
 
@@ -362,7 +363,7 @@ mod tests {
             csharp_cfg,
             ServerConfig {
                 command: csharp_ls.to_string_lossy().to_string(),
-                args: vec!["--stdio".to_string()],
+                args: Vec::new(),
             }
         );
 
