@@ -23,10 +23,13 @@ edited between the markers.
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
+
 #### Features
+
 - feat: add experimental LSP diagnostics and navigation
 
 #### Fixes
+
 - Fix YAML heredoc indentation
 - Fix rust-ci job if expressions
 - Fix workflows: avoid secrets in if
@@ -34,43 +37,52 @@ edited between the markers.
 - Fix subagent badges
 
 #### Documentation
+
 - docs: keep README ASCII-only
 - docs: prettier
+- docs: note Codexel release tag format
 
 #### TUI
+
 - tui: update status snapshots for v0.1.4
 - tui: prompt to continue on interrupted resume
 - tui: keep resume options visible on small terminals
 - tui: show LSP toggle in /experimental
 - tui: surface lsp tool calls in history
-- TUI: render apply_patch diagnostics as styled card
+- TUI: render `apply_patch` diagnostics as styled card
 - TUI: avoid false interrupted prompt on resume
 - tui: drop /explore-model; add /experimental to tui2
 - tui: default AskUserQuestion review selection to Submit
 
 #### Core
-- core: strengthen ask_user_question guidance
+
+- core: strengthen `ask_user_question` guidance
 - core: add web UI quality bar instructions
 - core: inject SpawnSubagent guidance for exec
 - core: enable LSP prompt diagnostics by default
 
 #### Plan Mode
+
 - plan: refine plan mode + variants prompts
 - plan: allow web search in /plan
-- Plan mode: add plan_explore subagent exploration
-- Plan exploration: mini subagents + mini_subagent_* config
+- Plan mode: add `plan_explore` subagent exploration
+- Plan exploration: mini subagents + `mini_subagent_*` config
 
 #### Branding & Packaging
+
 - codex-cli: bump codexel npm version to 0.1.3
 - Merge upstream/main into Codexel
 
 #### Chores
+
 - chore: update changelog
+- chore: make changelog generator prettier-stable
 
 #### Other
+
 - changelog: update 0.1.3 for upstream merge
 - Add Homebrew cask workflow and macOS artifacts
-- Use macos-15-intel for x86_64 builds
+- Use macos-15-intel for `x86_64` builds
 - release: bump versions to 0.1.4
 - changelog: update unreleased
 - checkpoint: pre explore-model + cancelled subagents
@@ -84,7 +96,7 @@ edited between the markers.
 - lsp: normalize paths and clarify tool docs
 - lsp: prewarm workspace and configured servers
 - lsp: prewarm autodetected servers
-- LSP: enable publishDiagnostics and show apply_patch diagnostics in TUI
+- LSP: enable publishDiagnostics and show `apply_patch` diagnostics in TUI
 - Prefer mini subagents for repo exploration
 - Tighten mini subagent exploration guidance
 - changelog: update unreleased
@@ -118,48 +130,57 @@ Release commit: 44f8df17aa11051fcf3919a9c16fe3b9c3296d66
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=79d019672838ccc532247588d31d2eda81fb42d8..44f8df17aa11051fcf3919a9c16fe3b9c3296d66 -->
+
 #### Fixes
+
 - Fix sdk workflow codexel build
 - Fix update checks and codex home isolation
 
 #### Documentation
+
 - docs: clarify Codexel fork positioning
-- docs: move What's different up and mention ask_user_question
+- docs: move What's different up and mention `ask_user_question`
 
 #### TUI
+
 - tui: show subagent tool calls in history
 - tui: keep subagent history updating
 - tui: keep subagent cell live during inserts
 
 #### Core
+
 - core: fix subagent config constraints
 
 #### Plan Mode
+
 - subagent: stream activity and match plan-variants UI
 - Persist approved plan and hide .codexel
 
 #### Branding & Packaging
+
 - chore: ignore .codexel
 - tests: keep codexel CLI suites green
 
 #### Chores
+
 - chore: update login flow and tui snapshots
 - chore: regenerate changelog
 
 #### Other
+
 - Update changelog for 0.1.2 release
 - Adjust changelog release metadata
 - Skip macOS rust-ci jobs on PRs
 - Skip upstream npm staging in CI for forks
 - Format markdown and workflow files
-- Add spawn_subagent tool
-- Show spawn_subagent tool calls in history
+- Add `spawn_subagent` tool
+- Show `spawn_subagent` tool calls in history
 - subagent: stream token counts
 - release: bump workspace version to 0.1.3
 - changelog: cut 0.1.3
 - changelog: update unreleased
 - changelog: update
-- Require spawn_subagent description and refresh snapshots
+- Require `spawn_subagent` description and refresh snapshots
 - changelog: fix 0.1.3 release ranges
 - Merge upstream/main into v0.1.3
 - changelog: filter upstream commits in generator
@@ -179,16 +200,21 @@ Release commit: 79d019672838ccc532247588d31d2eda81fb42d8
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=d02343f99e3260308b2355f26e382ae04b14d7e7..79d019672838ccc532247588d31d2eda81fb42d8 -->
+
 #### Fixes
+
 - Fix Codexel update actions
 
 #### Plan Mode
+
 - Deduplicate plan updates in history
 
 #### Branding & Packaging
+
 - Add GitHub Release publishing for Codexel
 
 #### Other
+
 - Update changelog for 0.1.1 (mac build)
 - Update status snapshots
 - Delay rate limit polling until user input
@@ -210,18 +236,23 @@ Release commit: d02343f99e3260308b2355f26e382ae04b14d7e7
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=3e57f558eff5b400292a6ad3c9df2721648aed6f..d02343f99e3260308b2355f26e382ae04b14d7e7 -->
+
 #### Fixes
+
 - Fix npm publish workflow yaml
 
 #### Documentation
+
 - docs: document changelog workflow in AGENTS
 - docs: remove interactive questions from AGENTS
 
 #### Branding & Packaging
+
 - changelog: add Codexel changelog and generator
 - Prepare Codexel npm 0.1.1 release
 
 #### Other
+
 - Update changelog for 0.1.1
 - Skip macOS in npm publish workflow
 <!-- END GENERATED DETAILS -->
@@ -241,34 +272,41 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=be274cbe6273cb17d756a6cda729d537f15ae49a..3e57f558eff5b400292a6ad3c9df2721648aed6f -->
+
 #### Features
+
 - feat: add /plan mode with plan approval
 
 #### Fixes
-- fix(tui2): drop disabled_reason from ask_user_question rows
+
+- fix(tui2): drop `disabled_reason` from `ask_user_question` rows
 
 #### Documentation
+
 - docs: document AskUserQuestion
 - docs: add Windows notes for just
 - docs: fix plan mode note apostrophe
 
 #### TUI
+
 - tui: show plan-variant progress
 - tui: show plan subagent checklist
 - tui: auto-execute approved plans
 - tui: polish plan-variants progress
 - tui: fix /plan cursor position
-- tui: add review step for ask_user_question
+- tui: add review step for `ask_user_question`
 - tui: taller plan approval overlay and wrapped summary
 - tui: make Plan Mode placeholder generic
 
 #### Core
+
 - core: keep plan subagents aligned with session model
 - core: make Plan Mode outputs junior-executable
 - core: pin approved plan into developer instructions
 - core: emit immediate plan progress on approval
 
 #### Plan Mode
+
 - plan: run variants in parallel with status
 - plan: show subagent thinking/writing status
 - plan: show per-variant token usage
@@ -282,14 +320,17 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 - plan: humanize exec activity + multiline goal
 
 #### Branding & Packaging
+
 - Rebrand Codex CLI as Codexel
 - Use @ixe1/codexel npm scope
 - Rebrand headers to Codexel
 
 #### Chores
+
 - chore: fix build after rebasing onto upstream/main
 - chore(core): sync built-in prompts with upstream
 
 #### Other
-- Add ask_user_question tool
+
+- Add `ask_user_question` tool
 <!-- END GENERATED DETAILS -->
