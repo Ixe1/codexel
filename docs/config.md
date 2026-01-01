@@ -76,8 +76,12 @@ Optional configuration:
 prompt_diagnostics = true
 max_prompt_diagnostics = 10
 max_tool_diagnostics = 200
+tool_diagnostics_wait_ms = 2000
 max_file_bytes = 524288
 ignored_globs = ["**/target/**", "**/node_modules/**", "**/.git/**"]
+
+# Note: Codex also respects `.gitignore` (and `.git/info/exclude`) in the workspace root when deciding
+# what files to scan/open, in addition to `ignored_globs`.
 
 [lsp.servers.rust]
 command = "rust-analyzer"

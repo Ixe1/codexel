@@ -221,6 +221,7 @@ impl Codex {
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
         skills_manager: Arc<SkillsManager>,
+        lsp_manager: codex_lsp::LspManager,
         conversation_history: InitialHistory,
         session_source: SessionSource,
     ) -> CodexResult<CodexSpawnOk> {
@@ -297,6 +298,7 @@ impl Codex {
             tx_event.clone(),
             conversation_history,
             session_source_clone,
+            lsp_manager,
             skills_manager,
         )
         .await
@@ -689,6 +691,7 @@ impl Session {
         tx_event: Sender<Event>,
         initial_history: InitialHistory,
         session_source: SessionSource,
+        lsp_manager: codex_lsp::LspManager,
         skills_manager: Arc<SkillsManager>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
@@ -799,7 +802,7 @@ impl Session {
 
         let mut lsp_manager_config = config.lsp.manager.clone();
         lsp_manager_config.enabled = config.features.enabled(Feature::Lsp);
-        let lsp_manager = codex_lsp::LspManager::new(lsp_manager_config);
+        lsp_manager.set_config(lsp_manager_config).await;
 
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),

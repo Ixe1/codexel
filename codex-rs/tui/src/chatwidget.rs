@@ -332,7 +332,7 @@ pub(crate) struct ChatWidget {
     bottom_pane: BottomPane,
     active_cell: Option<Box<dyn HistoryCell>>,
     config: Config,
-    lsp_manager: Option<codex_lsp::LspManager>,
+    lsp_manager: codex_lsp::LspManager,
     model_family: ModelFamily,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
@@ -1819,7 +1819,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut config = config;
         config.model = Some(model_slug.clone());
-        let lsp_manager = build_lsp_manager(&config);
+        let lsp_manager = conversation_manager.lsp_manager();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
@@ -1895,6 +1895,7 @@ impl ChatWidget {
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
     pub(crate) fn new_from_existing(
         common: ChatWidgetInit,
+        conversation_manager: Arc<ConversationManager>,
         conversation: std::sync::Arc<codex_core::CodexConversation>,
         session_configured: codex_core::protocol::SessionConfiguredEvent,
     ) -> Self {
@@ -1914,7 +1915,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
-        let lsp_manager = build_lsp_manager(&config);
+        let lsp_manager = conversation_manager.lsp_manager();
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
@@ -4403,7 +4404,7 @@ impl ChatWidget {
     }
 
     fn open_lsp_status(&mut self) {
-        let Some(lsp) = self.lsp_manager.clone() else {
+        if !self.config.features.enabled(Feature::Lsp) {
             self.add_error_message(
                 "LSP is disabled. Enable `[features].lsp = true` in config.toml.".to_string(),
             );
@@ -4411,8 +4412,12 @@ impl ChatWidget {
         };
 
         let cwd = self.config.cwd.clone();
+        let mut lsp_config = self.config.lsp.manager.clone();
+        lsp_config.enabled = true;
+        let lsp = self.lsp_manager.clone();
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
+            lsp.set_config(lsp_config).await;
             match lsp.status(&cwd).await {
                 Ok(status) => tx.send(AppEvent::LspStatusLoaded(status)),
                 Err(err) => tx.send(AppEvent::LspStatusLoadFailed(format!(
@@ -4421,15 +4426,6 @@ impl ChatWidget {
             }
         });
     }
-}
-
-fn build_lsp_manager(config: &Config) -> Option<codex_lsp::LspManager> {
-    if !config.features.enabled(Feature::Lsp) {
-        return None;
-    }
-    let mut lsp_config = config.lsp.manager.clone();
-    lsp_config.enabled = true;
-    Some(codex_lsp::LspManager::new(lsp_config))
 }
 
 impl Drop for ChatWidget {

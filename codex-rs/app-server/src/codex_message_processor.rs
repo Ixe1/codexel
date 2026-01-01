@@ -276,9 +276,7 @@ impl CodexMessageProcessor {
         cli_overrides: Vec<(String, TomlValue)>,
         feedback: CodexFeedback,
     ) -> Self {
-        let mut lsp_config = config.lsp.manager.clone();
-        lsp_config.enabled = config.features.enabled(Feature::Lsp);
-        let lsp_manager = codex_lsp::LspManager::new(lsp_config);
+        let lsp_manager = conversation_manager.lsp_manager();
         Self {
             auth_manager,
             conversation_manager,

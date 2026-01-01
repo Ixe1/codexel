@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -84,6 +85,7 @@ impl ToolHandler for LspHandler {
 
         let lsp = session.services.lsp_manager.clone();
         let max_default = turn.client.config().lsp.max_tool_diagnostics;
+        let wait_ms = turn.client.config().lsp.tool_diagnostics_wait_ms;
 
         match tool_name.as_str() {
             "lsp_diagnostics" => {
@@ -101,7 +103,12 @@ impl ToolHandler for LspHandler {
                 let max_results = args.max_results.unwrap_or(max_default);
 
                 let diags = lsp
-                    .diagnostics(&root, path.as_deref(), max_results)
+                    .diagnostics_wait(
+                        &root,
+                        path.as_deref(),
+                        max_results,
+                        Duration::from_millis(wait_ms as u64),
+                    )
                     .await
                     .map_err(|err| FunctionCallError::RespondToModel(format!("{err:#}")))?;
 

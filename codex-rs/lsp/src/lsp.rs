@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use dunce::canonicalize as normalize_path;
+use ignore::Match as GitignoreMatch;
+use ignore::gitignore::Gitignore;
+use ignore::gitignore::GitignoreBuilder;
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Child;
@@ -54,9 +57,63 @@ fn is_prewarm_language_id(language_id: &str) -> bool {
     )
 }
 
-fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<String> {
+fn build_root_gitignore(root: &Path) -> Option<Gitignore> {
+    let mut builder = GitignoreBuilder::new(root);
+    let mut any_added = false;
+
+    let gitignore_path = root.join(".gitignore");
+    if gitignore_path.is_file() {
+        if let Some(err) = builder.add(&gitignore_path) {
+            warn!("failed to add {}: {err}", gitignore_path.display());
+        } else {
+            any_added = true;
+        }
+    }
+
+    let git_exclude_path = root.join(".git").join("info").join("exclude");
+    if git_exclude_path.is_file() {
+        if let Some(err) = builder.add(&git_exclude_path) {
+            warn!("failed to add {}: {err}", git_exclude_path.display());
+        } else {
+            any_added = true;
+        }
+    }
+
+    if !any_added {
+        return None;
+    }
+
+    match builder.build() {
+        Ok(gitignore) => Some(gitignore),
+        Err(err) => {
+            warn!("failed to build gitignore matcher: {err}");
+            None
+        }
+    }
+}
+
+fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path, is_dir: bool) -> bool {
+    if !path.starts_with(root) {
+        return false;
+    }
+    matches!(
+        gitignore.matched_path_or_any_parents(path, is_dir),
+        GitignoreMatch::Ignore(_)
+    )
+}
+
+fn detect_language_ids_for_root(
+    root: &Path,
+    ignored_globs: &[String],
+) -> std::collections::BTreeSet<String> {
     const MAX_ENTRIES: usize = 10_000;
     const MAX_DEPTH: usize = 6;
+
+    let ignored: Vec<WildMatchPattern<'*', '?'>> = ignored_globs
+        .iter()
+        .map(|s| WildMatchPattern::new_case_insensitive(s))
+        .collect();
+    let gitignore = build_root_gitignore(root);
 
     let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut queue = vec![(root.to_path_buf(), 0usize)];
@@ -64,6 +121,16 @@ fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<Strin
 
     while let Some((dir, depth)) = queue.pop() {
         if seen >= MAX_ENTRIES || depth > MAX_DEPTH {
+            continue;
+        }
+
+        if ignored.iter().any(|p| p.matches(&dir.to_string_lossy())) {
+            continue;
+        }
+        if gitignore
+            .as_ref()
+            .is_some_and(|gitignore| is_gitignored(gitignore, root, &dir, true))
+        {
             continue;
         }
 
@@ -91,11 +158,30 @@ fn detect_language_ids_for_root(root: &Path) -> std::collections::BTreeSet<Strin
                 if matches!(name, ".git" | "node_modules" | "target") {
                     continue;
                 }
+                if ignored.iter().any(|p| p.matches(&path.to_string_lossy())) {
+                    continue;
+                }
+                if gitignore
+                    .as_ref()
+                    .is_some_and(|gitignore| is_gitignored(gitignore, root, &path, true))
+                {
+                    continue;
+                }
                 queue.push((path, depth.saturating_add(1)));
                 continue;
             }
 
             if !ft.is_file() {
+                continue;
+            }
+
+            if ignored.iter().any(|p| p.matches(&path.to_string_lossy())) {
+                continue;
+            }
+            if gitignore
+                .as_ref()
+                .is_some_and(|gitignore| is_gitignored(gitignore, root, &path, false))
+            {
                 continue;
             }
 
@@ -206,6 +292,7 @@ impl LspManager {
             .iter()
             .map(|s| WildMatchPattern::new_case_insensitive(s))
             .collect();
+        let gitignore = build_root_gitignore(&root);
 
         let (tx, rx) = mpsc::unbounded_channel();
         let watcher = start_watcher(&root, tx).context("start filesystem watcher")?;
@@ -213,8 +300,10 @@ impl LspManager {
         state.workspaces.insert(
             root.clone(),
             WorkspaceState {
+                root: root.clone(),
                 _watcher: watcher,
                 ignored,
+                gitignore,
                 servers: HashMap::new(),
                 open_docs: HashMap::new(),
                 diagnostics: BTreeMap::new(),
@@ -246,7 +335,8 @@ impl LspManager {
 
         let detected = tokio::task::spawn_blocking({
             let root = root.clone();
-            move || detect_language_ids_for_root(&root)
+            let ignored_globs = config.ignored_globs.clone();
+            move || detect_language_ids_for_root(&root, &ignored_globs)
         })
         .await
         .unwrap_or_default();
@@ -292,6 +382,8 @@ impl LspManager {
                     }
                     if inserted {
                         self.spawn_notification_loop(root.clone(), server);
+                    } else {
+                        shutdown_unused_server(&language_id, server).await;
                     }
                 }
                 Err(err) => {
@@ -341,6 +433,10 @@ impl LspManager {
         max_results: usize,
     ) -> anyhow::Result<Vec<Diagnostic>> {
         let root = normalize_root_path(root);
+        let config = self.inner.config.read().await.clone();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
         self.ensure_workspace(&root).await?;
         let path = path.map(|path| normalize_file_path(&root, path));
 
@@ -360,12 +456,105 @@ impl LspManager {
         Ok(ws.collect_diagnostics(path.as_deref(), max_results))
     }
 
+    pub async fn diagnostics_wait(
+        &self,
+        root: &Path,
+        path: Option<&Path>,
+        max_results: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<Diagnostic>> {
+        let root = normalize_root_path(root);
+        let config = self.inner.config.read().await.clone();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+
+        self.ensure_workspace(&root).await?;
+        let path = path.map(|path| normalize_file_path(&root, path));
+
+        // Subscribe before triggering open/update so we don't miss a fast publishDiagnostics.
+        let mut updates = self.subscribe_diagnostics(&root).await?;
+
+        // Best-effort: make sure we have something to report for explicit queries.
+        // Many servers don't proactively publish diagnostics unless a document is opened/updated.
+        if let Some(path) = path.as_deref() {
+            let _ = self.open_or_update(&root, path).await;
+
+            // For pull-diagnostics servers, try again with a caller-provided timeout.
+            // Some servers can take longer than the default per-request timeout while warming up.
+            if timeout > Duration::from_secs(3)
+                && let Ok(server) = self.server_for_path(&root, path).await
+            {
+                let _ = self
+                    .refresh_pull_diagnostics_with_timeout(
+                        root.clone(),
+                        path.to_path_buf(),
+                        server,
+                        timeout,
+                    )
+                    .await;
+            }
+        } else {
+            let _ = self.seed_diagnostics(&root).await;
+        }
+
+        if timeout.is_zero() {
+            return self.diagnostics(&root, path.as_deref(), max_results).await;
+        }
+
+        let start = tokio::time::Instant::now();
+        let deadline = start.checked_add(timeout).unwrap_or(start);
+        let target_path = path.map(|p| normalize_path(&p).unwrap_or(p));
+
+        loop {
+            let diags = self
+                .diagnostics(&root, target_path.as_deref(), max_results)
+                .await?;
+            if !diags.is_empty() {
+                return Ok(diags);
+            }
+
+            let now = tokio::time::Instant::now();
+            let remaining = deadline.saturating_duration_since(now);
+            if remaining.is_zero() {
+                return Ok(diags);
+            }
+
+            let update = match tokio::time::timeout(remaining, updates.recv()).await {
+                Ok(Ok(update)) => update,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return Ok(diags),
+                Err(_) => return Ok(diags),
+            };
+
+            if let Some(target_path) = &target_path {
+                let update_path = PathBuf::from(&update.path);
+                if update_path != *target_path {
+                    continue;
+                }
+            }
+
+            // We saw an update relevant to this request. Return whatever we have now (which may be
+            // empty if the server explicitly cleared diagnostics).
+            return self
+                .diagnostics(&root, target_path.as_deref(), max_results)
+                .await;
+        }
+    }
+
     async fn seed_diagnostics(&self, root: &Path) -> anyhow::Result<()> {
         let root = normalize_root_path(root);
         let config = self.inner.config.read().await.clone();
         if !config.enabled {
             return Ok(());
         }
+
+        let ignored: Vec<WildMatchPattern<'*', '?'>> = config
+            .ignored_globs
+            .iter()
+            .map(|s| WildMatchPattern::new_case_insensitive(s))
+            .collect();
+        let gitignore = build_root_gitignore(&root);
 
         // Only do work if we have no diagnostics yet.
         {
@@ -382,6 +571,15 @@ impl LspManager {
         while let Some((dir, depth)) = queue.pop() {
             if depth > 4 || seen > 2000 {
                 break;
+            }
+            if ignored.iter().any(|p| p.matches(&dir.to_string_lossy())) {
+                continue;
+            }
+            if gitignore
+                .as_ref()
+                .is_some_and(|gitignore| is_gitignored(gitignore, &root, &dir, true))
+            {
+                continue;
             }
             let Ok(rd) = std::fs::read_dir(&dir) else {
                 continue;
@@ -409,11 +607,30 @@ impl LspManager {
                     ) {
                         continue;
                     }
+                    if ignored.iter().any(|p| p.matches(&path.to_string_lossy())) {
+                        continue;
+                    }
+                    if gitignore
+                        .as_ref()
+                        .is_some_and(|gitignore| is_gitignored(gitignore, &root, &path, true))
+                    {
+                        continue;
+                    }
                     queue.push((path, depth.saturating_add(1)));
                     continue;
                 }
 
                 if !file_type.is_file() {
+                    continue;
+                }
+
+                if ignored.iter().any(|p| p.matches(&path.to_string_lossy())) {
+                    continue;
+                }
+                if gitignore
+                    .as_ref()
+                    .is_some_and(|gitignore| is_gitignored(gitignore, &root, &path, false))
+                {
                     continue;
                 }
 
@@ -438,11 +655,20 @@ impl LspManager {
             self.ensure_workspace(&root).await?;
         }
 
-        let (workspace_initialized, running_servers) = {
+        let (workspace_initialized, running_servers, pull_diagnostics) = {
             let state = self.inner.state.lock().await;
             match state.workspaces.get(&root) {
-                Some(ws) => (true, ws.servers.keys().cloned().collect::<Vec<String>>()),
-                None => (false, Vec::new()),
+                Some(ws) => (
+                    true,
+                    ws.servers.keys().cloned().collect::<Vec<String>>(),
+                    ws.servers
+                        .iter()
+                        .map(|(language_id, server)| {
+                            (language_id.clone(), server.supports_pull_diagnostics)
+                        })
+                        .collect::<HashMap<String, bool>>(),
+                ),
+                None => (false, Vec::new(), HashMap::new()),
             }
         };
 
@@ -454,6 +680,11 @@ impl LspManager {
         let mut languages = Vec::new();
         for language_id in language_ids {
             let running = running_servers.contains(&language_id);
+            let supports_pull_diagnostics = if running {
+                pull_diagnostics.get(&language_id).copied()
+            } else {
+                None
+            };
             let configured = config.servers.get(&language_id);
             let (configured, autodetected, effective) =
                 effective_server_config(&language_id, configured);
@@ -464,6 +695,7 @@ impl LspManager {
                 autodetected,
                 effective,
                 running,
+                supports_pull_diagnostics,
             });
         }
 
@@ -624,6 +856,8 @@ impl LspManager {
                 };
                 if inserted {
                     self.spawn_notification_loop(root.clone(), Arc::clone(&effective));
+                } else {
+                    shutdown_unused_server(language_id, spawned).await;
                 }
                 effective
             }
@@ -650,7 +884,18 @@ impl LspManager {
         path: PathBuf,
         server: Arc<ServerState>,
     ) -> anyhow::Result<()> {
-        let Some(diags) = server.pull_diagnostics(&path).await? else {
+        self.refresh_pull_diagnostics_with_timeout(root, path, server, Duration::from_secs(3))
+            .await
+    }
+
+    async fn refresh_pull_diagnostics_with_timeout(
+        &self,
+        root: PathBuf,
+        path: PathBuf,
+        server: Arc<ServerState>,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let Some(diags) = server.pull_diagnostics_with_timeout(&path, timeout).await? else {
             return Ok(());
         };
 
@@ -703,8 +948,10 @@ impl LspManager {
 }
 
 struct WorkspaceState {
+    root: PathBuf,
     _watcher: notify::RecommendedWatcher,
     ignored: Vec<WildMatchPattern<'*', '?'>>,
+    gitignore: Option<Gitignore>,
     servers: HashMap<String, Arc<ServerState>>,
     open_docs: HashMap<PathBuf, OpenDocState>,
     diagnostics: BTreeMap<PathBuf, Vec<Diagnostic>>,
@@ -714,7 +961,13 @@ struct WorkspaceState {
 impl WorkspaceState {
     fn is_ignored(&self, path: &Path) -> bool {
         let text = path.to_string_lossy();
-        self.ignored.iter().any(|p| p.matches(&text))
+        if self.ignored.iter().any(|p| p.matches(&text)) {
+            return true;
+        }
+        let Some(gitignore) = &self.gitignore else {
+            return false;
+        };
+        is_gitignored(gitignore, &self.root, path, false)
     }
 
     fn collect_diagnostics(&self, path: Option<&Path>, max_results: usize) -> Vec<Diagnostic> {
@@ -868,7 +1121,11 @@ impl ServerState {
         Ok(parse_document_symbols(value))
     }
 
-    async fn pull_diagnostics(&self, path: &Path) -> anyhow::Result<Option<Vec<Diagnostic>>> {
+    async fn pull_diagnostics_with_timeout(
+        &self,
+        path: &Path,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Vec<Diagnostic>>> {
         if !self.supports_pull_diagnostics {
             return Ok(None);
         }
@@ -877,12 +1134,17 @@ impl ServerState {
         tracing::debug!("lsp pull diagnostics: uri={uri}");
         let params = serde_json::json!({ "textDocument": { "uri": uri }});
         let value = tokio::time::timeout(
-            Duration::from_secs(3),
+            timeout,
             self.client
                 .request("textDocument/diagnostic", Some(params.clone())),
         )
         .await
-        .context("LSP textDocument/diagnostic timed out")?
+        .with_context(|| {
+            format!(
+                "LSP textDocument/diagnostic timed out after {}ms",
+                timeout.as_millis()
+            )
+        })?
         .map_err(anyhow::Error::from)?;
 
         if value.get("kind").and_then(Value::as_str) == Some("unchanged") {
@@ -1012,6 +1274,13 @@ async fn start_server(
         notifications: tx,
         supports_pull_diagnostics,
     }))
+}
+
+async fn shutdown_unused_server(language_id: &str, server: Arc<ServerState>) {
+    let mut child = server._child.lock().await;
+    if let Err(err) = child.kill().await {
+        tracing::debug!("failed to kill unused lsp server {language_id}: {err}");
+    }
 }
 
 async fn initialize(client: &JsonRpcClient, root: &Path) -> anyhow::Result<bool> {
@@ -1210,4 +1479,33 @@ fn parse_document_symbol(value: Value) -> Option<DocumentSymbol> {
         selection_range,
         children,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use pretty_assertions::assert_eq;
+
+    use super::detect_language_ids_for_root;
+
+    #[test]
+    fn prewarm_detection_respects_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+
+        fs::write(dir.path().join(".gitignore"), "tmp/lsp-smoke/\n").unwrap();
+        fs::create_dir_all(dir.path().join("tmp/lsp-smoke")).unwrap();
+        fs::write(
+            dir.path().join("tmp/lsp-smoke/php_lsp_smoke.php"),
+            "<?php echo 1;",
+        )
+        .unwrap();
+
+        let ids = detect_language_ids_for_root(dir.path(), &[]);
+        assert_eq!(ids.contains("php"), false);
+
+        fs::write(dir.path().join("index.php"), "<?php echo 2;").unwrap();
+        let ids = detect_language_ids_for_root(dir.path(), &[]);
+        assert_eq!(ids.contains("php"), true);
+    }
 }

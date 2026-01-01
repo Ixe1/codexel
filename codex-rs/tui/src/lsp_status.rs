@@ -38,6 +38,7 @@ pub(crate) fn render(status: &LspStatus) -> Vec<Line<'static>> {
     lines.push(Line::from("Servers".bold()));
 
     for lang in &status.languages {
+        let supports_pull_diagnostics = lang.supports_pull_diagnostics == Some(true);
         let header = vec![
             "• ".into(),
             Span::from(lang.language_id.clone()).bold(),
@@ -47,6 +48,11 @@ pub(crate) fn render(status: &LspStatus) -> Vec<Line<'static>> {
                 "yes".green()
             } else {
                 "no".dim()
+            },
+            if supports_pull_diagnostics {
+                ", caps=pull-diags".dim()
+            } else {
+                Span::default()
             },
         ];
         lines.push(header.into());

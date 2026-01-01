@@ -40,6 +40,11 @@ pub struct LspConfigToml {
     #[serde(default = "default_lsp_max_tool_diagnostics")]
     pub max_tool_diagnostics: usize,
 
+    /// How long `lsp_diagnostics` should wait (in ms) for the first diagnostics update when the
+    /// language server is still warming up. Set to `0` to disable waiting.
+    #[serde(default = "default_lsp_tool_diagnostics_wait_ms")]
+    pub tool_diagnostics_wait_ms: usize,
+
     /// Max file size in bytes to send to the language server.
     #[serde(default = "default_lsp_max_file_bytes")]
     pub max_file_bytes: usize,
@@ -59,6 +64,7 @@ impl Default for LspConfigToml {
             prompt_diagnostics: default_lsp_prompt_diagnostics(),
             max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
             max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            tool_diagnostics_wait_ms: default_lsp_tool_diagnostics_wait_ms(),
             max_file_bytes: default_lsp_max_file_bytes(),
             ignored_globs: Vec::new(),
             servers: HashMap::new(),
@@ -71,6 +77,7 @@ pub struct LspConfig {
     pub prompt_diagnostics: bool,
     pub max_prompt_diagnostics: usize,
     pub max_tool_diagnostics: usize,
+    pub tool_diagnostics_wait_ms: usize,
     pub manager: codex_lsp::LspManagerConfig,
 }
 
@@ -85,6 +92,7 @@ impl Default for LspConfig {
             prompt_diagnostics: default_lsp_prompt_diagnostics(),
             max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
             max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            tool_diagnostics_wait_ms: default_lsp_tool_diagnostics_wait_ms(),
             manager,
         }
     }
@@ -118,6 +126,7 @@ impl From<LspConfigToml> for LspConfig {
             prompt_diagnostics: toml.prompt_diagnostics,
             max_prompt_diagnostics: toml.max_prompt_diagnostics,
             max_tool_diagnostics: toml.max_tool_diagnostics,
+            tool_diagnostics_wait_ms: toml.tool_diagnostics_wait_ms,
             manager,
         }
     }
@@ -133,6 +142,10 @@ fn default_lsp_max_prompt_diagnostics() -> usize {
 
 fn default_lsp_max_tool_diagnostics() -> usize {
     200
+}
+
+fn default_lsp_tool_diagnostics_wait_ms() -> usize {
+    2000
 }
 
 fn default_lsp_max_file_bytes() -> usize {

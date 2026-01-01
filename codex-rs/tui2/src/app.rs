@@ -459,6 +459,7 @@ impl App {
                 };
                 ChatWidget::new_from_existing(
                     init,
+                    conversation_manager.clone(),
                     resumed.conversation,
                     resumed.session_configured,
                 )
@@ -1407,6 +1408,7 @@ impl App {
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
+                                    self.server.clone(),
                                     resumed.conversation,
                                     resumed.session_configured,
                                 );

@@ -19,6 +19,10 @@ pub struct LspLanguageStatus {
     pub autodetected: Option<ServerConfig>,
     pub effective: Option<(ServerConfig, LspServerSource)>,
     pub running: bool,
+    /// Whether the running server advertises `textDocument/diagnostic` (LSP pull diagnostics).
+    ///
+    /// `None` when the server isn't running.
+    pub supports_pull_diagnostics: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +103,10 @@ pub fn render_lsp_status(status: &LspStatus) -> String {
     for lang in &status.languages {
         let language_id = &lang.language_id;
         let running = if lang.running { "yes" } else { "no" };
+        let pull = match lang.supports_pull_diagnostics {
+            Some(true) => Some("pull-diags"),
+            _ => None,
+        };
 
         let configured = lang.configured.as_ref().map(server_cfg_display);
         let autodetected = lang.autodetected.as_ref().map(server_cfg_display);
@@ -114,8 +122,15 @@ pub fn render_lsp_status(status: &LspStatus) -> String {
         let autodetected = autodetected.as_deref().unwrap_or("(not found on PATH)");
         let effective = effective.as_deref().unwrap_or("(none)");
 
+        let caps = pull.into_iter().collect::<Vec<_>>().join(",");
+        let caps = if caps.is_empty() {
+            String::new()
+        } else {
+            format!(", caps={caps}")
+        };
+
         lines.push(format!(
-            "  - {language_id}: running={running}, effective={effective}, configured={configured}, detected={autodetected}",
+            "  - {language_id}: running={running}{caps}, effective={effective}, configured={configured}, detected={autodetected}",
         ));
     }
 
