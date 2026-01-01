@@ -417,11 +417,10 @@ impl LspManager {
                     continue;
                 }
 
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_ascii_lowercase);
-                if matches!(ext.as_deref(), Some("cs")) {
+                if let Some(language_id) = language_id_for_path(&path)
+                    && (is_prewarm_language_id(language_id)
+                        || config.servers.contains_key(language_id))
+                {
                     self.open_or_update(&root, &path).await?;
                     return Ok(());
                 }
