@@ -1010,7 +1010,6 @@ dependencies = [
  "codex-utils-json-to-toml",
  "core_test_support",
  "mcp-types",
- "os_info",
  "pretty_assertions",
  "serde",
  "serde_json",
