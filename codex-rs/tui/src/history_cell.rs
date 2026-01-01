@@ -1891,7 +1891,7 @@ pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHist
     PlainHistoryCell { lines }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct LspDiagnosticsEntry {
     path: PathBuf,
     line: u32,
@@ -1994,27 +1994,97 @@ fn parse_lsp_count(line: &str, key: &str) -> Option<usize> {
 
 fn parse_lsp_diagnostic_entry(text: &str) -> Option<LspDiagnosticsEntry> {
     let text = text.trim();
-    let last_colon = text.rfind(':')?;
-    let before_last = text.get(..last_colon)?;
-    let prev_colon = before_last.rfind(':')?;
+    // Format: "<path>:<line>:<character> <message>"
+    //
+    // `<path>` can contain ':' on Windows (drive letters), and `<message>` can also contain ':'.
+    // Parse from the right by looking for ":<digits> " (character) and a preceding ":<digits>" (line).
+    let colon_positions: Vec<usize> = text.match_indices(':').map(|(idx, _)| idx).collect();
+    if colon_positions.len() < 2 {
+        return None;
+    }
 
-    let path = PathBuf::from(text.get(..prev_colon)?);
-    let rest = text.get(prev_colon + 1..)?;
-    let (line_str, rest) = rest.split_once(':')?;
-    let line = line_str.trim().parse::<u32>().ok()?;
+    for idx in (1..colon_positions.len()).rev() {
+        let colon_character = colon_positions[idx];
+        let after_character = text.get(colon_character + 1..)?;
 
-    let rest = rest.trim_start();
-    let mut it = rest.splitn(2, ' ');
-    let character_str = it.next()?;
-    let character = character_str.trim().parse::<u32>().ok()?;
-    let message = it.next().unwrap_or_default().trim().to_string();
+        let digits_len = after_character
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if digits_len == 0 {
+            continue;
+        }
 
-    Some(LspDiagnosticsEntry {
-        path,
-        line,
-        character,
-        message,
-    })
+        let after_digits = after_character.get(digits_len..)?;
+        if !after_digits.starts_with(' ') {
+            continue;
+        }
+
+        let character = after_character.get(..digits_len)?.parse::<u32>().ok()?;
+        let message = after_digits.trim_start().to_string();
+
+        let colon_line = colon_positions[idx - 1];
+        let line_str = text.get(colon_line + 1..colon_character)?;
+        if line_str.is_empty() || !line_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let line = line_str.parse::<u32>().ok()?;
+
+        let path = PathBuf::from(text.get(..colon_line)?);
+        return Some(LspDiagnosticsEntry {
+            path,
+            line,
+            character,
+            message,
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod lsp_diagnostics_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn parse_lsp_diagnostic_entry_handles_colons_in_path_and_message() {
+        let entry = parse_lsp_diagnostic_entry(
+            r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs:43:14 Syntax Error: expected expression"#,
+        )
+        .expect("should parse entry");
+        assert_eq!(
+            entry,
+            LspDiagnosticsEntry {
+                path: PathBuf::from(
+                    r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs"#,
+                ),
+                line: 43,
+                character: 14,
+                message: "Syntax Error: expected expression".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_lsp_diagnostic_entry_handles_messages_without_colons() {
+        let entry = parse_lsp_diagnostic_entry(
+            r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs:75:17 Variable `None` should have snake_case name, e.g. `none`"#,
+        )
+        .expect("should parse entry");
+        assert_eq!(
+            entry,
+            LspDiagnosticsEntry {
+                path: PathBuf::from(
+                    r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs"#,
+                ),
+                line: 75,
+                character: 17,
+                message: "Variable `None` should have snake_case name, e.g. `none`".to_string(),
+            }
+        );
+    }
 }
 
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
