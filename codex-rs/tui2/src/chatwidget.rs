@@ -119,7 +119,6 @@ use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
-use crate::get_git_changed_files::get_git_changed_files;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
@@ -2077,9 +2076,6 @@ impl ChatWidget {
             }
             SlashCommand::Lsp => {
                 self.open_lsp_status();
-            }
-            SlashCommand::Diagnostics => {
-                self.open_diagnostics();
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -4276,44 +4272,6 @@ impl ChatWidget {
         RenderableItem::Owned(Box::new(flex))
     }
 
-    fn open_diagnostics(&mut self) {
-        let Some(lsp) = self.lsp_manager.clone() else {
-            self.add_error_message(
-                "LSP is disabled. Enable `[features].lsp = true` in config.toml.".to_string(),
-            );
-            return;
-        };
-
-        let cwd = self.config.cwd.clone();
-        let tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
-            let diags = if let Ok((_, mut changed)) = get_git_changed_files(&cwd).await
-                && !changed.is_empty()
-            {
-                // Cap to avoid doing too much work in large repos.
-                changed.truncate(25);
-                let mut diags = Vec::new();
-                for path in changed {
-                    if tokio::fs::metadata(&path).await.is_ok()
-                        && let Ok(mut file_diags) = lsp.diagnostics(&cwd, Some(&path), 50).await
-                    {
-                        diags.append(&mut file_diags);
-                    }
-                }
-                Ok(diags)
-            } else {
-                lsp.diagnostics(&cwd, None, 200).await
-            };
-
-            match diags {
-                Ok(diags) => tx.send(AppEvent::DiagnosticsLoaded(diags)),
-                Err(err) => tx.send(AppEvent::DiagnosticsLoadFailed(format!(
-                    "Failed to fetch diagnostics: {err:#}",
-                ))),
-            }
-        });
-    }
-
     fn open_lsp_status(&mut self) {
         let Some(lsp) = self.lsp_manager.clone() else {
             self.add_error_message(
@@ -4332,66 +4290,6 @@ impl ChatWidget {
                 ))),
             }
         });
-    }
-
-    pub(crate) fn open_diagnostics_picker(&mut self, diags: Vec<codex_lsp::Diagnostic>) {
-        use crate::bottom_pane::SelectionItem;
-        use crate::bottom_pane::SelectionViewParams;
-        use crate::bottom_pane::popup_consts::standard_popup_hint_line;
-        use crate::render::renderable::ColumnRenderable;
-
-        let mut items = Vec::new();
-        for diag in diags {
-            let path = PathBuf::from(&diag.path);
-            let line = diag.range.start.line;
-            let character = diag.range.start.character;
-            let severity = diag
-                .severity
-                .map(|s| format!("{s:?}"))
-                .unwrap_or_else(|| "Unknown".to_string());
-            let name = format!("{severity} {}:{line}:{character}", path.display());
-            let message = diag.message.clone();
-            let search_value = Some(format!(
-                "{} {} {message}",
-                path.display(),
-                severity.to_ascii_lowercase()
-            ));
-
-            items.push(SelectionItem {
-                name,
-                description: Some(message),
-                actions: vec![Box::new(move |tx| {
-                    tx.send(AppEvent::OpenFilePreview {
-                        path: path.clone(),
-                        line,
-                    });
-                })],
-                dismiss_on_select: true,
-                search_value,
-                ..Default::default()
-            });
-        }
-
-        if items.is_empty() {
-            self.add_info_message(
-                "No diagnostics.".to_string(),
-                Some("Some language servers only report diagnostics for files they’ve opened; try editing a file or applying a patch, then retry.".to_string()),
-            );
-            return;
-        }
-
-        let mut header = ColumnRenderable::new();
-        header.push(Line::from("Diagnostics".bold()));
-
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            header: Box::new(header),
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            is_searchable: true,
-            search_placeholder: Some("Search diagnostics…".to_string()),
-            ..Default::default()
-        });
-        self.request_redraw();
     }
 }
 
