@@ -62,6 +62,10 @@ edited between the markers.
 
 #### Branding & Packaging
 - codex-cli: bump codexel npm version to 0.1.3
+- Merge upstream/main into Codexel
+
+#### Chores
+- chore: update changelog
 
 #### Other
 - changelog: update 0.1.3 for upstream merge
