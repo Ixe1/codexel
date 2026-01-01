@@ -23,6 +23,12 @@ In the `codex-rs` folder where the Rust code lives:
 - When cutting a release, update the release and upstream baseline SHAs in `CHANGELOG.md`,
   then rerun the generator.
 
+## Releases (Codexel vs codex-rs)
+
+- Codexel release tags that trigger the publishing workflows use `codexel-vX.Y.Z` (for example `codexel-v0.1.4`).
+- The upstream `codex-rs` Rust release workflow uses `rust-vX.Y.Z` tags.
+- A plain `vX.Y.Z` tag exists historically in this repo, but does not match those workflow triggers.
+
 ## Formatting, lint, tests
 
 Run `just fmt` (in `codex-rs` directory) automatically after making Rust code changes; do not ask for approval to run it.
