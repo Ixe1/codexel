@@ -50,6 +50,7 @@ mod exec_command;
 mod external_editor;
 mod file_search;
 mod frames;
+mod get_git_changed_files;
 mod get_git_diff;
 mod history_cell;
 pub mod insert_history;

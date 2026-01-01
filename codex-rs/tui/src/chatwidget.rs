@@ -119,6 +119,7 @@ use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::get_git_changed_files::get_git_changed_files;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
@@ -4416,7 +4417,25 @@ impl ChatWidget {
         let cwd = self.config.cwd.clone();
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            match lsp.diagnostics(&cwd, None, 200).await {
+            let diags = if let Ok((_, mut changed)) = get_git_changed_files(&cwd).await
+                && !changed.is_empty()
+            {
+                // Cap to avoid doing too much work in large repos.
+                changed.truncate(25);
+                let mut diags = Vec::new();
+                for path in changed {
+                    if tokio::fs::metadata(&path).await.is_ok()
+                        && let Ok(mut file_diags) = lsp.diagnostics(&cwd, Some(&path), 50).await
+                    {
+                        diags.append(&mut file_diags);
+                    }
+                }
+                Ok(diags)
+            } else {
+                lsp.diagnostics(&cwd, None, 200).await
+            };
+
+            match diags {
                 Ok(diags) => tx.send(AppEvent::DiagnosticsLoaded(diags)),
                 Err(err) => tx.send(AppEvent::DiagnosticsLoadFailed(format!(
                     "Failed to fetch diagnostics: {err:#}",
@@ -4482,7 +4501,10 @@ impl ChatWidget {
         }
 
         if items.is_empty() {
-            self.add_info_message("No diagnostics.".to_string(), None);
+            self.add_info_message(
+                "No diagnostics.".to_string(),
+                Some("Some language servers only report diagnostics for files they’ve opened; try editing a file or applying a patch, then retry.".to_string()),
+            );
             return;
         }
 
