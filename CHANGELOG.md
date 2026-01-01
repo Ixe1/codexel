@@ -86,6 +86,11 @@ edited between the markers.
 - changelog: update unreleased
 - changelog: update unreleased
 - lsp: autodetect PHP and Perl servers
+- changelog: update unreleased
+- Ignore tmp/lsp-smoke LSP test files
+- Add LSP status command and improve /lsp UI
+- codex-lsp: add C# language support
+- lsp: handle server requests and pull diagnostics
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20

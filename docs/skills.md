@@ -1,4 +1,4 @@
-# Skills (experimental)
+# Skills
 
 > **Warning:** This is an experimental and non-stable feature. If you depend on it, please expect breaking changes over the coming weeks and understand that there is currently no guarantee that this works well. Use at your own risk!
 
@@ -26,8 +26,8 @@ Skills are behind the experimental `skills` feature flag and are disabled by def
 
 - YAML frontmatter + body.
   - Required:
-    - `name` (non-empty, ≤100 chars, sanitized to one line)
-    - `description` (non-empty, ≤500 chars, sanitized to one line)
+    - `name` (non-empty, <=100 chars, sanitized to one line)
+    - `description` (non-empty, <=500 chars, sanitized to one line)
   - Extra keys are ignored. The body can contain any Markdown; it is not injected into context.
 
 ## Loading and rendering
@@ -78,3 +78,5 @@ description: Extract text and tables from PDFs; use when PDFs, forms, or documen
 - For form filling, see FORMS.md.
 SKILL_EXAMPLE
 ```
+
+For upstream documentation about skills, refer to [this documentation](https://developers.openai.com/codex/skills).

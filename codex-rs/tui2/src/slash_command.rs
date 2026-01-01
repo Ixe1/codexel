@@ -24,7 +24,7 @@ pub enum SlashCommand {
     Resume,
     Init,
     Compact,
-    Undo,
+    // Undo,
     Diff,
     Mention,
     Status,
@@ -50,7 +50,7 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Plan => "plan a task before making changes",
             SlashCommand::Resume => "resume a saved chat",
-            SlashCommand::Undo => "ask Codex to undo a turn",
+            // SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
@@ -85,7 +85,7 @@ impl SlashCommand {
             | SlashCommand::Resume
             | SlashCommand::Init
             | SlashCommand::Compact
-            | SlashCommand::Undo
+            // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::PlanModel
             | SlashCommand::SubagentModel
