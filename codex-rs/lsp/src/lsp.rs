@@ -213,7 +213,6 @@ impl LspManager {
         state.workspaces.insert(
             root.clone(),
             WorkspaceState {
-                root: root.clone(),
                 _watcher: watcher,
                 ignored,
                 servers: HashMap::new(),
@@ -279,13 +278,21 @@ impl LspManager {
 
             match start_server(&root, &language_id, &config).await {
                 Ok(server) => {
-                    let mut state = self.inner.state.lock().await;
-                    let Some(ws) = state.workspaces.get_mut(&root) else {
-                        continue;
-                    };
-                    ws.servers
-                        .insert(language_id.to_string(), Arc::clone(&server));
-                    self.spawn_notification_loop(root.clone(), server);
+                    let mut inserted = false;
+                    {
+                        let mut state = self.inner.state.lock().await;
+                        let Some(ws) = state.workspaces.get_mut(&root) else {
+                            continue;
+                        };
+                        if !ws.servers.contains_key(&language_id) {
+                            ws.servers
+                                .insert(language_id.to_string(), Arc::clone(&server));
+                            inserted = true;
+                        }
+                    }
+                    if inserted {
+                        self.spawn_notification_loop(root.clone(), server);
+                    }
                 }
                 Err(err) => {
                     warn!("lsp prewarm failed for {language_id}: {err:#}");
@@ -581,18 +588,7 @@ impl LspManager {
                 return Ok(());
             }
 
-            if !ws.servers.contains_key(language_id) {
-                let server = start_server(&ws.root, language_id, &config).await?;
-                ws.servers
-                    .insert(language_id.to_string(), Arc::clone(&server));
-                self.spawn_notification_loop(root.clone(), Arc::clone(&server));
-            }
-
-            let server = ws
-                .servers
-                .get(language_id)
-                .cloned()
-                .context("server missing after initialization")?;
+            let server = ws.servers.get(language_id).cloned();
 
             let doc = ws
                 .open_docs
@@ -602,6 +598,36 @@ impl LspManager {
 
             let version = doc.version;
             (server, version, version == 1)
+        };
+
+        let server = match server {
+            Some(server) => server,
+            None => {
+                let spawned = start_server(&root, language_id, &config).await?;
+                let mut inserted = false;
+                let effective = {
+                    let mut state = self.inner.state.lock().await;
+                    let ws = state
+                        .workspaces
+                        .get_mut(&root)
+                        .context("workspace not initialized")?;
+                    if ws.is_ignored(&path) {
+                        return Ok(());
+                    }
+                    if let Some(existing) = ws.servers.get(language_id).cloned() {
+                        existing
+                    } else {
+                        ws.servers
+                            .insert(language_id.to_string(), Arc::clone(&spawned));
+                        inserted = true;
+                        Arc::clone(&spawned)
+                    }
+                };
+                if inserted {
+                    self.spawn_notification_loop(root.clone(), Arc::clone(&effective));
+                }
+                effective
+            }
         };
 
         if is_open {
@@ -678,7 +704,6 @@ impl LspManager {
 }
 
 struct WorkspaceState {
-    root: PathBuf,
     _watcher: notify::RecommendedWatcher,
     ignored: Vec<WildMatchPattern<'*', '?'>>,
     servers: HashMap<String, Arc<ServerState>>,
@@ -745,6 +770,14 @@ struct ServerState {
     _child: Mutex<Child>,
     notifications: tokio::sync::broadcast::Sender<(String, Option<Value>)>,
     supports_pull_diagnostics: bool,
+}
+
+impl Drop for ServerState {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self._child.try_lock() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 impl ServerState {
@@ -844,37 +877,22 @@ impl ServerState {
         let uri = file_uri(path)?.to_string();
         tracing::debug!("lsp pull diagnostics: uri={uri}");
         let params = serde_json::json!({ "textDocument": { "uri": uri }});
-        let mut backoff = Duration::from_millis(250);
-        for attempt in 0..6u8 {
-            if attempt > 0 {
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(4));
-            }
+        let value = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.client
+                .request("textDocument/diagnostic", Some(params.clone())),
+        )
+        .await
+        .context("LSP textDocument/diagnostic timed out")?
+        .map_err(anyhow::Error::from)?;
 
-            let value = tokio::time::timeout(
-                Duration::from_secs(10),
-                self.client
-                    .request("textDocument/diagnostic", Some(params.clone())),
-            )
-            .await
-            .context("LSP textDocument/diagnostic timed out")?
-            .map_err(anyhow::Error::from)?;
-
-            let Some(diags) = parse_text_document_diagnostic(path, &value) else {
-                continue;
-            };
-
-            tracing::debug!(
-                "lsp pull diagnostics: attempt={} count={}",
-                attempt,
-                diags.len()
-            );
-            if !diags.is_empty() || attempt == 5 {
-                return Ok(Some(diags));
-            }
+        if value.get("kind").and_then(Value::as_str) == Some("unchanged") {
+            return Ok(None);
         }
 
-        Ok(None)
+        let diags = parse_text_document_diagnostic(path, &value).unwrap_or_default();
+        tracing::debug!("lsp pull diagnostics: count={}", diags.len());
+        Ok(Some(diags))
     }
 }
 

@@ -83,7 +83,7 @@ impl ToolHandler for LspHandler {
         };
 
         let lsp = session.services.lsp_manager.clone();
-        let max_default = 200usize;
+        let max_default = turn.client.config().lsp.max_tool_diagnostics;
 
         match tool_name.as_str() {
             "lsp_diagnostics" => {

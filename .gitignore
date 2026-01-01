@@ -12,7 +12,7 @@ dist/
 build/
 out/
 storybook-static/
-/codex-rs/target-test/
+/codex-rs/**/target-test/
 
 # ignore README for publishing
 codex-cli/README.md
