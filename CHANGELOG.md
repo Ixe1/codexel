@@ -35,6 +35,7 @@ edited between the markers.
 - Fix workflows: avoid secrets in if
 - Fix app-server OverrideTurnContext init
 - Fix subagent badges
+- fix(lsp): respect `max_tool_diagnostics` and avoid leaked servers
 
 #### Documentation
 
@@ -53,6 +54,9 @@ edited between the markers.
 - TUI: avoid false interrupted prompt on resume
 - tui: drop /explore-model; add /experimental to tui2
 - tui: default AskUserQuestion review selection to Submit
+- tui: parse LSP diagnostics entries with colons
+- tui: make /diagnostics open changed files
+- tui: remove /diagnostics
 
 #### Core
 
@@ -108,6 +112,8 @@ edited between the markers.
 - Add LSP status command and improve /lsp UI
 - codex-lsp: add C# language support
 - lsp: handle server requests and pull diagnostics
+- lsp: seed diagnostics by opening a source file
+- lsp: wait for diagnostics during warmup; show pull-diags capability
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
