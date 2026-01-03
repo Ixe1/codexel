@@ -82,6 +82,7 @@ edited between the markers.
 - chore: update changelog
 - chore: make changelog generator prettier-stable
 - chore(app-server): drop unused `os_info` dev-dependency
+- chore: regenerate changelog
 
 #### Other
 

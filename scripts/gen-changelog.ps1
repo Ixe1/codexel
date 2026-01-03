@@ -44,15 +44,19 @@ function Get-GroupForSubject([string]$Subject) {
 function Escape-MarkdownInlineText([string]$Line) {
     # Make identifier-like tokens stable under Markdown + Prettier by rendering them as inline code.
     # This avoids Prettier rewriting things like "mini_subagent_*" into emphasis.
-    $escaped = [regex]::Replace($Line, '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+_\*', {
-        param($m) '`' + $m.Value + '`'
-    })
+    # Skip segments that are already inside inline code spans.
+    $parts = $Line.Split('`')
+    for ($i = 0; $i -lt $parts.Length; $i += 2) {
+        $parts[$i] = [regex]::Replace($parts[$i], '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+_\*', {
+            param($m) '`' + $m.Value + '`'
+        })
 
-    $escaped = [regex]::Replace($escaped, '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b', {
-        param($m) '`' + $m.Value + '`'
-    })
+        $parts[$i] = [regex]::Replace($parts[$i], '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b', {
+            param($m) '`' + $m.Value + '`'
+        })
+    }
 
-    return $escaped
+    return ($parts -join '`')
 }
 
 function Render-Details([string]$Range) {
