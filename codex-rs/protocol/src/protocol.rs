@@ -146,6 +146,24 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_model: Option<String>,
 
+        /// Updated model slug used for exploration flows (e.g. `/plan` exploration subagents).
+        ///
+        /// When omitted, exploration flows use the active model for that turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        explore_model: Option<String>,
+
+        /// Updated model slug used for mini subagents (the `spawn_mini_subagent` tool flow).
+        ///
+        /// When omitted, mini subagents use their configured default model.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mini_subagent_model: Option<String>,
+
+        /// Updated model slug used for ordinary spawned subagents (the `spawn_subagent` tool flow).
+        ///
+        /// When omitted, spawned subagents use the active model for that turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_model: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
@@ -159,6 +177,27 @@ pub enum Op {
         /// the effort, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for exploration flows (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        explore_effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for mini subagents (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mini_subagent_effort: Option<Option<ReasoningEffortConfig>>,
+
+        /// Updated reasoning effort for ordinary spawned subagents (honored only for reasoning-capable models).
+        ///
+        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
+        /// the effort, or `None` to leave the existing value unchanged.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_effort: Option<Option<ReasoningEffortConfig>>,
 
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1182,6 +1221,17 @@ pub struct SubAgentInvocation {
     pub label: String,
     /// Prompt sent to the subagent.
     pub prompt: String,
+    /// Model slug used for this subagent invocation (when known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentToolCallOutcome {
+    Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
@@ -1245,6 +1295,10 @@ pub struct SubAgentToolCallEndEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tokens: Option<i64>,
+    /// Outcome of the subagent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub outcome: Option<SubAgentToolCallOutcome>,
     /// Result of the subagent call. Note this could be an error.
     pub result: Result<String, String>,
 }
@@ -1437,6 +1491,23 @@ pub struct TurnContextItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
     pub summary: ReasoningSummaryConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_output_json_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_policy: Option<TruncationPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "mode", content = "limit", rename_all = "snake_case")]
+pub enum TruncationPolicy {
+    Bytes(usize),
+    Tokens(usize),
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
@@ -1692,6 +1763,11 @@ pub struct StreamErrorEvent {
     pub message: String,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,
+    /// Optional details about the underlying stream failure (often the same
+    /// human-readable message that is surfaced as the terminal error if retries
+    /// are exhausted).
+    #[serde(default)]
+    pub additional_details: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

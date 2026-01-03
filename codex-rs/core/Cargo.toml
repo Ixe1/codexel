@@ -16,6 +16,7 @@ workspace = true
 anyhow = { workspace = true }
 async-channel = { workspace = true }
 async-trait = { workspace = true }
+arc-swap = "1.7.1"
 base64 = { workspace = true }
 chardetng = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
@@ -28,6 +29,7 @@ codex-execpolicy = { workspace = true }
 codex-file-search = { workspace = true }
 codex-git = { workspace = true }
 codex-keyring-store = { workspace = true }
+codex-lsp = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-rmcp-client = { workspace = true }
@@ -122,6 +124,7 @@ assert_cmd = { workspace = true }
 assert_matches = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-core = { path = ".", features = ["deterministic_process_ids"] }
+codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
 ctor = { workspace = true }
 escargot = { workspace = true }

@@ -1,22 +1,16 @@
 use async_trait::async_trait;
 use codex_protocol::plan_mode::PlanOutputEvent;
 use codex_protocol::plan_tool::UpdatePlanArgs;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentInvocation;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 
-use crate::codex_delegate::run_codex_conversation_one_shot;
 use crate::config::Config;
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -41,12 +35,15 @@ Hard rules:
 - Do not propose or perform edits. Do not call apply_patch.
 - Do not call propose_plan_variants.
 - You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Output ONLY valid JSON matching this shape:
   { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
+  Do not wrap the JSON in markdown code fences.
 
 Quality bar:
-- Prefer 8-16 steps that are checkable and ordered.
-- `plan.explanation` MUST be a practical runbook with clear section headings. Include ALL of:
+- Scale the number of steps to the task. Avoid filler (small: 4-8; typical: 8-12; complex: 12-16).
+- In `summary`, state when to choose this variant and the biggest trade-off.
+- `plan.explanation` MUST be a practical runbook with clear section headings. Keep it concise and focus on what makes this variant distinct. Include ALL of:
   - Assumptions
   - Scope (in-scope + non-goals)
   - Touchpoints (files/modules/components to change, with what/why)
@@ -54,6 +51,7 @@ Quality bar:
   - Risks (failure modes + mitigations + rollback)
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
+  - Open questions (optional; write "None." if none)
 - Make this variant meaningfully different from other plausible variants (trade-offs, sequencing, scope, risk posture).
 "#;
 
@@ -85,19 +83,41 @@ fn variant_title(idx: usize, total: usize) -> String {
 fn plan_variant_focus(idx: usize) -> &'static str {
     match idx {
         1 => {
-            "Variant 1 (Minimal): minimal-risk, minimal-diff path (pragmatic, incremental; avoid refactors). Title MUST be \"Minimal\"."
+            "Variant 1 (Minimal): minimal-risk, minimal-diff path (pragmatic, incremental; avoid refactors)."
         }
         2 => {
-            "Variant 2 (Correctness): correctness-first path (tests, invariants, edge cases, careful validation/rollback). Title MUST be \"Correctness\"."
+            "Variant 2 (Correctness): correctness-first path (tests, invariants, edge cases, careful validation/rollback)."
         }
         3 => {
-            "Variant 3 (DX): architecture/DX-first path (refactors that pay down tech debt, clearer abstractions, better ergonomics). Title MUST be \"DX\"."
+            "Variant 3 (DX): architecture/DX-first path (refactors that pay down tech debt, clearer abstractions, better ergonomics)."
         }
         _ => "Use a distinct angle and trade-offs.",
     }
 }
 
+fn strip_clarification_policy(existing: &str) -> String {
+    const HEADER: &str = "## Clarification Policy";
+    let Some(start) = existing.find(HEADER) else {
+        return existing.to_string();
+    };
+
+    let after_header = &existing[start + HEADER.len()..];
+    let end_rel = after_header.find("\n## ").unwrap_or(after_header.len());
+    let end = start + HEADER.len() + end_rel;
+
+    let before = existing[..start].trim_end();
+    let after = existing[end..].trim_start();
+    if before.is_empty() {
+        return after.to_string();
+    }
+    if after.is_empty() {
+        return before.to_string();
+    }
+    format!("{before}\n{after}")
+}
+
 fn build_plan_variant_developer_instructions(idx: usize, total: usize, existing: &str) -> String {
+    let existing = strip_clarification_policy(existing);
     let existing = existing.trim();
     if existing.is_empty() {
         return format!(
@@ -121,6 +141,7 @@ impl ToolHandler for PlanVariantsHandler {
         let ToolInvocation {
             session,
             turn,
+            call_id,
             payload,
             tool_name,
             ..
@@ -157,48 +178,33 @@ impl ToolHandler for PlanVariantsHandler {
         let mut join_set = JoinSet::new();
         for idx in 1..=TOTAL {
             let label = format!("plan_variant_{idx}");
+            let variant_call_id = format!("{call_id}:plan_variant:{idx}");
             let base_config = turn.client.config().as_ref().clone();
             let goal = goal.to_string();
             let session = Arc::clone(&session);
             let turn = Arc::clone(&turn);
             join_set.spawn(async move {
-                let started_at = Instant::now();
-
-                session
-                    .notify_background_event(
-                        turn.as_ref(),
-                        format!("Plan variants: generating {idx}/{TOTAL}…"),
-                    )
-                    .await;
-
-                session
-                    .notify_background_event(
-                        turn.as_ref(),
-                        format!("Plan variant {idx}/{TOTAL}: starting"),
-                    )
-                    .await;
-
-                let out = run_one_variant(
+                let invocation = SubAgentInvocation {
+                    description: format!(
+                        "Plan variant {idx}/{TOTAL}: {}",
+                        variant_title(idx, TOTAL)
+                    ),
+                    label: format!("plan_variant_{idx}"),
+                    prompt: format!("Goal: {goal}\n\nReturn plan variant #{idx}."),
+                    model: None,
+                };
+                let out = run_one_variant(PlanVariantRunArgs {
+                    call_id: variant_call_id,
+                    invocation,
                     base_config,
                     goal,
                     idx,
-                    TOTAL,
+                    total: TOTAL,
                     label,
-                    Arc::clone(&session),
-                    Arc::clone(&turn),
-                )
+                    parent_session: Arc::clone(&session),
+                    parent_ctx: Arc::clone(&turn),
+                })
                 .await;
-
-                let elapsed = started_at.elapsed();
-                session
-                    .notify_background_event(
-                        turn.as_ref(),
-                        format!(
-                            "Plan variants: finished {idx}/{TOTAL} ({})",
-                            fmt_variant_duration(elapsed)
-                        ),
-                    )
-                    .await;
 
                 (idx, out)
             });
@@ -243,99 +249,21 @@ impl ToolHandler for PlanVariantsHandler {
     }
 }
 
-fn fmt_variant_duration(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs_f64();
-    if secs < 60.0 {
-        return format!("{secs:.1}s");
-    }
+async fn run_one_variant(args: PlanVariantRunArgs) -> PlanOutputEvent {
+    let PlanVariantRunArgs {
+        call_id,
+        invocation,
+        base_config,
+        goal,
+        idx,
+        total,
+        label,
+        parent_session,
+        parent_ctx,
+    } = args;
 
-    let whole_secs = elapsed.as_secs();
-    let minutes = whole_secs / 60;
-    let seconds = whole_secs % 60;
-    format!("{minutes}m {seconds:02}s")
-}
-
-fn fmt_exec_activity_command(command: &[String]) -> String {
-    if command.is_empty() {
-        return "shell".to_string();
-    }
-
-    let cmd = if let Some((_shell, script)) = crate::parse_command::extract_shell_command(command) {
-        let script = script.trim();
-        if script.is_empty() {
-            "shell".to_string()
-        } else {
-            script
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    } else {
-        crate::parse_command::shlex_join(command)
-    };
-
-    if cmd.is_empty() {
-        "shell".to_string()
-    } else {
-        cmd
-    }
-}
-
-fn activity_for_event(msg: &EventMsg) -> Option<String> {
-    match msg {
-        EventMsg::TaskStarted(_) => Some("starting".to_string()),
-        EventMsg::UserMessage(_) => Some("sending prompt".to_string()),
-        EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningDelta(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::AgentReasoningRawContentDelta(_)
-        | EventMsg::AgentReasoningSectionBreak(_) => Some("thinking".to_string()),
-        EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => Some("writing".to_string()),
-        EventMsg::ExecCommandBegin(ev) => Some(fmt_exec_activity_command(&ev.command)),
-        EventMsg::McpToolCallBegin(ev) => Some(format!(
-            "mcp {}/{}",
-            ev.invocation.server.trim(),
-            ev.invocation.tool.trim()
-        )),
-        EventMsg::WebSearchBegin(_) => Some("web_search".to_string()),
-        _ => None,
-    }
-}
-
-fn fmt_variant_tokens(tokens: i64) -> Option<String> {
-    if tokens <= 0 {
-        return None;
-    }
-
-    let tokens_f = tokens as f64;
-    if tokens < 1_000 {
-        return Some(format!("{tokens}"));
-    }
-    if tokens < 100_000 {
-        return Some(format!("{:.1}k", tokens_f / 1_000.0));
-    }
-    if tokens < 1_000_000 {
-        return Some(format!("{}k", tokens / 1_000));
-    }
-    if tokens < 100_000_000 {
-        return Some(format!("{:.1}M", tokens_f / 1_000_000.0));
-    }
-
-    Some(format!("{}M", tokens / 1_000_000))
-}
-
-async fn run_one_variant(
-    base_config: Config,
-    goal: String,
-    idx: usize,
-    total: usize,
-    label: String,
-    parent_session: Arc<crate::codex::Session>,
-    parent_ctx: Arc<crate::codex::TurnContext>,
-) -> PlanOutputEvent {
     let mut cfg = base_config.clone();
+    let mut invocation = invocation;
 
     // Do not override the base/system prompt; some environments restrict it to whitelisted prompts.
     // Put plan-variant guidance in developer instructions instead.
@@ -353,16 +281,14 @@ async fn run_one_variant(
             .clone()
             .unwrap_or_else(|| parent_ctx.client.get_model()),
     );
+    invocation.model = cfg.model.clone();
     cfg.model_reasoning_effort = parent_ctx
         .plan_reasoning_effort
         .or(parent_ctx.client.get_reasoning_effort());
     cfg.model_reasoning_summary = parent_ctx.client.get_reasoning_summary();
 
     let mut features = cfg.features.clone();
-    features
-        .disable(Feature::ApplyPatchFreeform)
-        .disable(Feature::WebSearchRequest)
-        .disable(Feature::ViewImageTool);
+    crate::tasks::constrain_features_for_planning(&mut features);
     cfg.features = features;
     cfg.approval_policy =
         crate::config::Constrained::allow_any(codex_protocol::protocol::AskForApproval::Never);
@@ -373,22 +299,18 @@ async fn run_one_variant(
         text: format!("Goal: {goal}\n\nReturn plan variant #{idx}."),
     }];
 
-    let cancel = CancellationToken::new();
-    let session_for_events = Arc::clone(&parent_session);
-    let io = match run_codex_conversation_one_shot(
-        cfg,
-        Arc::clone(&parent_session.services.auth_manager),
-        Arc::clone(&parent_session.services.models_manager),
-        input,
+    let response = match crate::tools::subagent_runner::run_subagent_tool_call(
         parent_session,
         Arc::clone(&parent_ctx),
-        cancel,
-        None,
+        call_id,
+        invocation,
+        cfg,
+        input,
         SubAgentSource::Other(label),
     )
     .await
     {
-        Ok(io) => io,
+        Ok(response) => response,
         Err(err) => {
             return PlanOutputEvent {
                 title: variant_title(idx, total),
@@ -401,61 +323,19 @@ async fn run_one_variant(
         }
     };
 
-    let mut last_agent_message: Option<String> = None;
-    let mut last_activity: Option<String> = None;
-    let mut last_reported_tokens: Option<i64> = None;
-    let mut last_token_update_at: Option<Instant> = None;
-    while let Ok(Event { msg, .. }) = io.rx_event.recv().await {
-        if let EventMsg::TokenCount(ev) = &msg
-            && let Some(info) = &ev.info
-        {
-            let tokens = info.total_token_usage.blended_total();
-            let now = Instant::now();
-            let should_report = match (last_reported_tokens, last_token_update_at) {
-                (Some(prev), Some(prev_at)) => {
-                    tokens > prev
-                        && (tokens - prev >= 250 || now.duration_since(prev_at).as_secs() >= 2)
-                }
-                (Some(prev), None) => tokens > prev,
-                (None, _) => tokens > 0,
-            };
+    parse_plan_output_event(idx, total, response.as_str())
+}
 
-            if should_report && let Some(formatted) = fmt_variant_tokens(tokens) {
-                session_for_events
-                    .notify_background_event(
-                        parent_ctx.as_ref(),
-                        format!("Plan variant {idx}/{total}: tokens {formatted}"),
-                    )
-                    .await;
-                last_reported_tokens = Some(tokens);
-                last_token_update_at = Some(now);
-            }
-        }
-
-        if let Some(activity) = activity_for_event(&msg)
-            && last_activity.as_deref() != Some(activity.as_str())
-        {
-            session_for_events
-                .notify_background_event(
-                    parent_ctx.as_ref(),
-                    format!("Plan variant {idx}/{total}: {activity}"),
-                )
-                .await;
-            last_activity = Some(activity);
-        }
-
-        match msg {
-            EventMsg::TaskComplete(ev) => {
-                last_agent_message = ev.last_agent_message;
-                break;
-            }
-            EventMsg::TurnAborted(_) => break,
-            _ => {}
-        }
-    }
-
-    let text = last_agent_message.unwrap_or_default();
-    parse_plan_output_event(idx, total, text.as_str())
+struct PlanVariantRunArgs {
+    call_id: String,
+    invocation: SubAgentInvocation,
+    base_config: Config,
+    goal: String,
+    idx: usize,
+    total: usize,
+    label: String,
+    parent_session: Arc<crate::codex::Session>,
+    parent_ctx: Arc<crate::codex::TurnContext>,
 }
 
 fn parse_plan_output_event(idx: usize, total: usize, text: &str) -> PlanOutputEvent {
@@ -486,38 +366,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exec_activity_command_strips_powershell_wrapper() {
-        let shell = if cfg!(windows) {
-            "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-        } else {
-            "/usr/local/bin/powershell.exe"
-        };
-        let cmd = vec![
-            shell.to_string(),
-            "-NoProfile".to_string(),
-            "-Command".to_string(),
-            "rg --version".to_string(),
-        ];
-        assert_eq!(fmt_exec_activity_command(&cmd), "rg --version");
-    }
-
-    #[test]
-    fn exec_activity_command_strips_bash_lc_wrapper() {
-        let cmd = vec![
-            "bash".to_string(),
-            "-lc".to_string(),
-            "rg --version".to_string(),
-        ];
-        assert_eq!(fmt_exec_activity_command(&cmd), "rg --version");
-    }
-
-    #[test]
     fn plan_variant_titles_are_stable() {
         assert_eq!(variant_title(1, 3), "Minimal");
         assert_eq!(variant_title(2, 3), "Correctness");
         assert_eq!(variant_title(3, 3), "DX");
         assert_eq!(variant_title(4, 3), "Variant 4/3");
         assert_eq!(variant_title(1, 2), "Variant 1/2");
+    }
+
+    #[test]
+    fn plan_variants_strip_clarification_policy_from_existing_instructions() {
+        let existing =
+            "## Clarification Policy\n- Ask questions\n\n## Something Else\nKeep this.\n";
+        let out = build_plan_variant_developer_instructions(1, 3, existing);
+        assert!(!out.contains("## Clarification Policy"));
+        assert!(out.contains("## Something Else"));
+        assert!(out.contains("Keep this."));
     }
 
     #[test]
@@ -537,9 +401,10 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 use assert_cmd::cargo::cargo_bin;
-                let mut overrides = crate::config::ConfigOverrides::default();
-                overrides.codex_linux_sandbox_exe = Some(cargo_bin("codex-linux-sandbox"));
-                overrides
+                crate::config::ConfigOverrides {
+                    codex_linux_sandbox_exe: Some(cargo_bin("codex-linux-sandbox")),
+                    ..Default::default()
+                }
             }
             #[cfg(not(target_os = "linux"))]
             {

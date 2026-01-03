@@ -33,8 +33,8 @@ use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::SubAgentInvocation;
+use codex_core::protocol::SubAgentToolCallOutcome;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::openai_models::ReasoningSummaryFormat;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
@@ -1097,6 +1097,103 @@ pub(crate) struct McpToolCallCell {
     animations_enabled: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct FunctionToolCallCell {
+    tool_name: String,
+    arguments: String,
+    output: String,
+    success: bool,
+    duration: Option<Duration>,
+}
+
+impl FunctionToolCallCell {
+    pub(crate) fn new(
+        tool_name: String,
+        arguments: String,
+        output: String,
+        success: bool,
+        duration: Option<Duration>,
+    ) -> Self {
+        Self {
+            tool_name,
+            arguments,
+            output,
+            success,
+            duration,
+        }
+    }
+
+    fn invocation_text(&self) -> String {
+        if self.arguments.trim().is_empty() {
+            return self.tool_name.clone();
+        }
+        format!("{} {}", self.tool_name, self.arguments)
+    }
+}
+
+impl HistoryCell for FunctionToolCallCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        let bullet = if self.success {
+            "•".green().bold()
+        } else {
+            "•".red().bold()
+        };
+        let header_text = "Called".bold();
+
+        let mut header_spans = vec![bullet, " ".into(), header_text, " ".into()];
+        if let Some(duration) = self.duration {
+            header_spans.push(format!("({})", fmt_subagent_duration(duration)).dim());
+            header_spans.push(" ".into());
+        }
+
+        let invocation_line: Line<'static> = Line::from(self.invocation_text());
+        let mut compact_header = Line::from(header_spans.clone());
+        let reserved = compact_header.width();
+        let inline_invocation =
+            invocation_line.width() <= (width as usize).saturating_sub(reserved);
+
+        if inline_invocation {
+            compact_header.extend(invocation_line.spans.clone());
+            lines.push(compact_header);
+        } else {
+            header_spans.pop(); // drop trailing space for standalone header
+            lines.push(Line::from(header_spans));
+
+            let opts = RtOptions::new((width as usize).saturating_sub(4))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into());
+            let wrapped = word_wrap_line(&invocation_line, opts);
+            let body_lines: Vec<Line<'static>> = wrapped.iter().map(line_to_static).collect();
+            lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        if !self.output.trim().is_empty() {
+            let detail_wrap_width = (width as usize).saturating_sub(4).max(1);
+            let text = format_and_truncate_tool_result(
+                &self.output,
+                TOOL_CALL_MAX_LINES,
+                detail_wrap_width,
+            );
+            let mut detail_lines: Vec<Line<'static>> = Vec::new();
+            for segment in text.split('\n') {
+                let line = Line::from(segment.to_string().dim());
+                let wrapped = word_wrap_line(
+                    &line,
+                    RtOptions::new(detail_wrap_width)
+                        .initial_indent("".into())
+                        .subsequent_indent("    ".into()),
+                );
+                detail_lines.extend(wrapped.iter().map(line_to_static));
+            }
+            lines.extend(prefix_lines(detail_lines, "  └ ".dim(), "    ".into()));
+        }
+
+        lines
+    }
+}
+
 impl McpToolCallCell {
     pub(crate) fn new(
         call_id: String,
@@ -1141,6 +1238,10 @@ impl McpToolCallCell {
         let elapsed = self.start_time.elapsed();
         self.duration = Some(elapsed);
         self.result = Some(Err("interrupted".to_string()));
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.result.is_none()
     }
 
     fn render_content_block(block: &mcp_types::ContentBlock, width: usize) -> String {
@@ -1264,6 +1365,7 @@ pub(crate) struct SubAgentToolCallCell {
     duration: Option<Duration>,
     activity: Option<String>,
     tokens: Option<i64>,
+    outcome: Option<SubAgentToolCallOutcome>,
     result: Option<Result<String, String>>,
 }
 
@@ -1276,6 +1378,7 @@ impl SubAgentToolCallCell {
             duration: None,
             activity: None,
             tokens: None,
+            outcome: None,
             result: None,
         }
     }
@@ -1288,10 +1391,12 @@ impl SubAgentToolCallCell {
         &mut self,
         duration: Duration,
         tokens: Option<i64>,
+        outcome: Option<SubAgentToolCallOutcome>,
         result: Result<String, String>,
     ) {
         self.duration = Some(duration);
         self.tokens = tokens;
+        self.outcome = outcome;
         self.result = Some(result);
     }
 
@@ -1320,6 +1425,7 @@ impl SubAgentToolCallCell {
         let elapsed = self.start_time.elapsed();
         self.duration = Some(elapsed);
         self.tokens = None;
+        self.outcome = Some(SubAgentToolCallOutcome::Cancelled);
         self.result = Some(Err("interrupted".to_string()));
     }
 }
@@ -1328,6 +1434,7 @@ impl HistoryCell for SubAgentToolCallCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let status = self.success();
         let indicator = match status {
+            _ if self.outcome == Some(SubAgentToolCallOutcome::Cancelled) => "⏹".dim(),
             Some(true) => "✓".green(),
             Some(false) => "✗".red(),
             None => "●".cyan(),
@@ -1337,13 +1444,21 @@ impl HistoryCell for SubAgentToolCallCell {
         let elapsed = self.duration.unwrap_or_else(|| self.start_time.elapsed());
         let elapsed = fmt_subagent_duration(elapsed);
 
-        let mut header_spans: Vec<Span<'static>> = vec![
-            indicator,
-            " ".into(),
-            "Subagent:".bold(),
-            " ".into(),
-            summary.into(),
-        ];
+        let is_mini = self.invocation.model.as_deref() == Some("gpt-5.1-codex-mini");
+        let is_explorer = self.invocation.label.starts_with("plan_explore_");
+
+        let mut header_spans: Vec<Span<'static>> = vec![indicator, " ".into(), "Subagent".bold()];
+        if is_explorer && !is_mini {
+            header_spans.push(" ".into());
+            header_spans.push("[Explorer]".cyan().bold());
+        }
+        if is_mini {
+            header_spans.push(" ".into());
+            header_spans.push("[Mini]".magenta().bold());
+        }
+        header_spans.push(":".bold());
+        header_spans.push(" ".into());
+        header_spans.push(summary.into());
         let mut meta = format!(" ({elapsed}");
         if let Some(tokens) = self.tokens.and_then(fmt_subagent_tokens) {
             meta.push_str(&format!(", {tokens} tok"));
@@ -1357,6 +1472,7 @@ impl HistoryCell for SubAgentToolCallCell {
         let activity = self.activity.as_deref().unwrap_or("working…");
         let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
         let detail_span = match &self.result {
+            _ if self.outcome == Some(SubAgentToolCallOutcome::Cancelled) => "cancelled".dim(),
             Some(Ok(_)) => "done".dim(),
             Some(Err(_)) => "failed".red(),
             None => activity.to_string().dim(),
@@ -1444,6 +1560,7 @@ impl SubAgentToolCallGroupCell {
         call_id: &str,
         duration: Duration,
         tokens: Option<i64>,
+        outcome: Option<SubAgentToolCallOutcome>,
         result: Result<String, String>,
     ) -> bool {
         match self
@@ -1453,7 +1570,7 @@ impl SubAgentToolCallGroupCell {
             .find(|cell| cell.call_id() == call_id)
         {
             Some(cell) => {
-                cell.complete(duration, tokens, result);
+                cell.complete(duration, tokens, outcome, result);
                 true
             }
             None => false,
@@ -1774,6 +1891,202 @@ pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHist
     PlainHistoryCell { lines }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct LspDiagnosticsEntry {
+    path: PathBuf,
+    line: u32,
+    character: u32,
+    message: String,
+}
+
+#[derive(Debug)]
+struct LspDiagnosticsSummary {
+    errors: usize,
+    warnings: usize,
+    entries: Vec<LspDiagnosticsEntry>,
+}
+
+pub(crate) fn new_lsp_diagnostics_event(text: String, cwd: PathBuf) -> Option<PlainHistoryCell> {
+    let summary = parse_lsp_diagnostics_summary(&text)?;
+    if summary.errors == 0 && summary.warnings == 0 {
+        return None;
+    }
+    if summary.entries.is_empty() {
+        return None;
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let icon = if summary.errors > 0 {
+        "!".red().bold()
+    } else {
+        "!".magenta().bold()
+    };
+    lines.push(vec![icon, " ".into(), "LSP diagnostics".bold()].into());
+
+    let errors = if summary.errors > 0 {
+        summary.errors.to_string().red().bold()
+    } else {
+        summary.errors.to_string().dim()
+    };
+    let warnings = if summary.warnings > 0 {
+        summary.warnings.to_string().magenta().bold()
+    } else {
+        summary.warnings.to_string().dim()
+    };
+    lines.push(
+        vec![
+            "  ".into(),
+            "Errors: ".dim(),
+            errors,
+            ", ".dim(),
+            "Warnings: ".dim(),
+            warnings,
+        ]
+        .into(),
+    );
+    lines.push(Line::from(""));
+
+    for entry in summary.entries {
+        let display_path = display_path_for(&entry.path, &cwd);
+        let loc = format!("{display_path}:{}:{}", entry.line, entry.character);
+        lines.push(vec!["  - ".dim(), loc.dim(), " ".into(), entry.message.into()].into());
+    }
+
+    Some(PlainHistoryCell { lines })
+}
+
+fn parse_lsp_diagnostics_summary(text: &str) -> Option<LspDiagnosticsSummary> {
+    let mut lines = text.lines();
+    let header = lines.next()?.trim();
+    if header != "## LSP diagnostics" && header != "LSP diagnostics" {
+        return None;
+    }
+    let counts = lines.next()?.trim();
+    let errors = parse_lsp_count(counts, "Errors")?;
+    let warnings = parse_lsp_count(counts, "Warnings")?;
+
+    let mut entries = Vec::new();
+    for line in lines {
+        let line = line.trim();
+        let Some(stripped) = line.strip_prefix("- ") else {
+            continue;
+        };
+        if let Some(entry) = parse_lsp_diagnostic_entry(stripped) {
+            entries.push(entry);
+        }
+    }
+
+    Some(LspDiagnosticsSummary {
+        errors,
+        warnings,
+        entries,
+    })
+}
+
+fn parse_lsp_count(line: &str, key: &str) -> Option<usize> {
+    let needle = format!("{key}:");
+    let start = line.find(&needle)? + needle.len();
+    let rest = line.get(start..)?.trim_start();
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+fn parse_lsp_diagnostic_entry(text: &str) -> Option<LspDiagnosticsEntry> {
+    let text = text.trim();
+    // Format: "<path>:<line>:<character> <message>"
+    //
+    // `<path>` can contain ':' on Windows (drive letters), and `<message>` can also contain ':'.
+    // Parse from the right by looking for ":<digits> " (character) and a preceding ":<digits>" (line).
+    let colon_positions: Vec<usize> = text.match_indices(':').map(|(idx, _)| idx).collect();
+    if colon_positions.len() < 2 {
+        return None;
+    }
+
+    for idx in (1..colon_positions.len()).rev() {
+        let colon_character = colon_positions[idx];
+        let after_character = text.get(colon_character + 1..)?;
+
+        let digits_len = after_character
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if digits_len == 0 {
+            continue;
+        }
+
+        let after_digits = after_character.get(digits_len..)?;
+        if !after_digits.starts_with(' ') {
+            continue;
+        }
+
+        let character = after_character.get(..digits_len)?.parse::<u32>().ok()?;
+        let message = after_digits.trim_start().to_string();
+
+        let colon_line = colon_positions[idx - 1];
+        let line_str = text.get(colon_line + 1..colon_character)?;
+        if line_str.is_empty() || !line_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let line = line_str.parse::<u32>().ok()?;
+
+        let path = PathBuf::from(text.get(..colon_line)?);
+        return Some(LspDiagnosticsEntry {
+            path,
+            line,
+            character,
+            message,
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod lsp_diagnostics_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn parse_lsp_diagnostic_entry_handles_colons_in_path_and_message() {
+        let entry = parse_lsp_diagnostic_entry(
+            r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs:43:14 Syntax Error: expected expression"#,
+        )
+        .expect("should parse entry");
+        assert_eq!(
+            entry,
+            LspDiagnosticsEntry {
+                path: PathBuf::from(
+                    r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs"#,
+                ),
+                line: 43,
+                character: 14,
+                message: "Syntax Error: expected expression".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_lsp_diagnostic_entry_handles_messages_without_colons() {
+        let entry = parse_lsp_diagnostic_entry(
+            r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs:75:17 Variable `None` should have snake_case name, e.g. `none`"#,
+        )
+        .expect("should parse entry");
+        assert_eq!(
+            entry,
+            LspDiagnosticsEntry {
+                path: PathBuf::from(
+                    r#"F:\GitHub\codex\codex-rs\mcp-server\tests\common\mcp_process.rs"#,
+                ),
+                line: 75,
+                character: 17,
+                message: "Variable `None` should have snake_case name, e.g. `none`".to_string(),
+            }
+        );
+    }
+}
+
 pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     // Use a hair space (U+200A) to create a subtle, near-invisible separation
     // before the text. VS16 is intentionally omitted to keep spacing tighter
@@ -1898,39 +2211,28 @@ pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistor
     PlainHistoryCell { lines }
 }
 
-pub(crate) fn new_reasoning_summary_block(
-    full_reasoning_buffer: String,
-    reasoning_summary_format: ReasoningSummaryFormat,
-) -> Box<dyn HistoryCell> {
-    if reasoning_summary_format == ReasoningSummaryFormat::Experimental {
-        // Experimental format is following:
-        // ** header **
-        //
-        // reasoning summary
-        //
-        // So we need to strip header from reasoning summary
-        let full_reasoning_buffer = full_reasoning_buffer.trim();
-        if let Some(open) = full_reasoning_buffer.find("**") {
-            let after_open = &full_reasoning_buffer[(open + 2)..];
-            if let Some(close) = after_open.find("**") {
-                let after_close_idx = open + 2 + close + 2;
-                // if we don't have anything beyond `after_close_idx`
-                // then we don't have a summary to inject into history
-                if after_close_idx < full_reasoning_buffer.len() {
-                    let header_buffer = full_reasoning_buffer[..after_close_idx].to_string();
-                    let summary_buffer = full_reasoning_buffer[after_close_idx..].to_string();
-                    return Box::new(ReasoningSummaryCell::new(
-                        header_buffer,
-                        summary_buffer,
-                        false,
-                    ));
-                }
+pub(crate) fn new_reasoning_summary_block(full_reasoning_buffer: String) -> Box<dyn HistoryCell> {
+    let full_reasoning_buffer = full_reasoning_buffer.trim();
+    if let Some(open) = full_reasoning_buffer.find("**") {
+        let after_open = &full_reasoning_buffer[(open + 2)..];
+        if let Some(close) = after_open.find("**") {
+            let after_close_idx = open + 2 + close + 2;
+            // if we don't have anything beyond `after_close_idx`
+            // then we don't have a summary to inject into history
+            if after_close_idx < full_reasoning_buffer.len() {
+                let header_buffer = full_reasoning_buffer[..after_close_idx].to_string();
+                let summary_buffer = full_reasoning_buffer[after_close_idx..].to_string();
+                return Box::new(ReasoningSummaryCell::new(
+                    header_buffer,
+                    summary_buffer,
+                    false,
+                ));
             }
         }
     }
     Box::new(ReasoningSummaryCell::new(
         "".to_string(),
-        full_reasoning_buffer,
+        full_reasoning_buffer.to_string(),
         true,
     ))
 }
@@ -2048,13 +2350,13 @@ mod tests {
     use codex_core::config::ConfigBuilder;
     use codex_core::config::types::McpServerConfig;
     use codex_core::config::types::McpServerTransportConfig;
-    use codex_core::models_manager::manager::ModelsManager;
     use codex_core::protocol::McpAuthStatus;
     use codex_protocol::parse_command::ParsedCommand;
     use dirs::home_dir;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::time::Duration;
 
     use codex_core::protocol::ExecCommandSource;
     use mcp_types::CallToolResult;
@@ -2088,13 +2390,81 @@ mod tests {
     }
 
     #[test]
+    fn function_tool_call_cell_renders_invocation_and_output() {
+        let cell = FunctionToolCallCell::new(
+            "lsp_definition".to_string(),
+            r#"{"file_path":"C:\\repo\\src\\main.rs","line":1,"character":1}"#.to_string(),
+            r#"{"locations":[]}"#.to_string(),
+            true,
+            Some(Duration::from_millis(120)),
+        );
+        let rendered = render_transcript(&cell).join("\n");
+        assert!(rendered.contains("Called"));
+        assert!(rendered.contains("lsp_definition"));
+        assert!(rendered.contains("\"locations\""));
+    }
+
+    #[test]
     fn subagent_summary_prefers_description() {
         let invocation = SubAgentInvocation {
             description: "Summarize the auth flow".to_string(),
             label: "alpha".to_string(),
             prompt: "Prompt".to_string(),
+            model: None,
         };
         assert_eq!(subagent_summary(&invocation), "Summarize the auth flow");
+    }
+
+    #[test]
+    fn subagent_cell_renders_mini_badge() {
+        let invocation = SubAgentInvocation {
+            description: "Trace control flow".to_string(),
+            label: "mini".to_string(),
+            prompt: "Prompt".to_string(),
+            model: Some("gpt-5.1-codex-mini".to_string()),
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Subagent [Mini]:"))
+        );
+    }
+
+    #[test]
+    fn subagent_cell_renders_explorer_badge() {
+        let invocation = SubAgentInvocation {
+            description: "Repo map".to_string(),
+            label: "plan_explore_1".to_string(),
+            prompt: "Prompt".to_string(),
+            model: None,
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Subagent [Explorer]:"))
+        );
+    }
+
+    #[test]
+    fn subagent_cell_renders_mini_badge_when_explorer_and_mini() {
+        let invocation = SubAgentInvocation {
+            description: "Repo map".to_string(),
+            label: "plan_explore_1".to_string(),
+            prompt: "Prompt".to_string(),
+            model: Some("gpt-5.1-codex-mini".to_string()),
+        };
+        let mut cell = SubAgentToolCallCell::new("call-1".to_string(), invocation);
+        cell.duration = Some(Duration::from_secs(0));
+        let lines = render_lines(&cell.display_lines(200));
+        let first = lines.first();
+        assert!(first.is_some_and(|line| line.contains("Subagent [Mini]:")));
+        assert!(first.is_some_and(|line| !line.contains("[Explorer]")));
     }
 
     #[test]
@@ -2971,10 +3341,8 @@ mod tests {
     }
     #[test]
     fn reasoning_summary_block() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
         let cell = new_reasoning_summary_block(
             "**High level reasoning**\n\nDetailed reasoning goes here.".to_string(),
-            reasoning_format,
         );
 
         let rendered_display = render_lines(&cell.display_lines(80));
@@ -2986,11 +3354,7 @@ mod tests {
 
     #[test]
     fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "Detailed reasoning goes here.".to_string(),
-            reasoning_format,
-        );
+        let cell = new_reasoning_summary_block("Detailed reasoning goes here.".to_string());
 
         let rendered = render_transcript(cell.as_ref());
         assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
@@ -3001,17 +3365,8 @@ mod tests {
         let mut config = test_config().await;
         config.model = Some("gpt-3.5-turbo".to_string());
         config.model_supports_reasoning_summaries = Some(true);
-        config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);
-        let model_family =
-            ModelsManager::construct_model_family_offline(&config.model.clone().unwrap(), &config);
-        assert_eq!(
-            model_family.reasoning_summary_format,
-            ReasoningSummaryFormat::Experimental
-        );
-
         let cell = new_reasoning_summary_block(
             "**High level reasoning**\n\nDetailed reasoning goes here.".to_string(),
-            model_family.reasoning_summary_format,
         );
 
         let rendered_display = render_lines(&cell.display_lines(80));
@@ -3020,11 +3375,8 @@ mod tests {
 
     #[test]
     fn reasoning_summary_block_falls_back_when_header_is_missing() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning without closing".to_string(),
-            reasoning_format,
-        );
+        let cell =
+            new_reasoning_summary_block("**High level reasoning without closing".to_string());
 
         let rendered = render_transcript(cell.as_ref());
         assert_eq!(rendered, vec!["• **High level reasoning without closing"]);
@@ -3032,18 +3384,14 @@ mod tests {
 
     #[test]
     fn reasoning_summary_block_falls_back_when_summary_is_missing() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning without closing**".to_string(),
-            reasoning_format.clone(),
-        );
+        let cell =
+            new_reasoning_summary_block("**High level reasoning without closing**".to_string());
 
         let rendered = render_transcript(cell.as_ref());
         assert_eq!(rendered, vec!["• High level reasoning without closing"]);
 
         let cell = new_reasoning_summary_block(
             "**High level reasoning without closing**\n\n  ".to_string(),
-            reasoning_format,
         );
 
         let rendered = render_transcript(cell.as_ref());
@@ -3052,10 +3400,8 @@ mod tests {
 
     #[test]
     fn reasoning_summary_block_splits_header_and_summary_when_present() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
         let cell = new_reasoning_summary_block(
             "**High level plan**\n\nWe should fix the bug next.".to_string(),
-            reasoning_format,
         );
 
         let rendered_display = render_lines(&cell.display_lines(80));

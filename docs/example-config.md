@@ -24,6 +24,15 @@ model = "gpt-5.1-codex-max"
 # Optional model used for `/plan` (defaults to `model` when unset).
 # plan_model = "gpt-5.1-codex"
 
+# Optional model used for mini subagents (used for `/plan` exploration and `spawn_mini_subagent`).
+# mini_subagent_model = "gpt-5.1-codex-mini"
+#
+# Deprecated alias (still supported for compatibility):
+# explore_model = "gpt-5.1-mini"
+
+# Optional model used for spawned subagents (defaults to the active model for that turn).
+# subagent_model = "gpt-5.1-mini"
+
 # Model used by the /review feature (code reviews). Default: "gpt-5.1-codex-max".
 review_model = "gpt-5.1-codex-max"
 
@@ -46,6 +55,15 @@ model_reasoning_effort = "medium"
 # Optional reasoning effort for `/plan` (defaults to `model_reasoning_effort` when unset).
 # plan_model_reasoning_effort = "medium"
 
+# Optional reasoning effort for mini subagents (used for `/plan` exploration and `spawn_mini_subagent`).
+# mini_subagent_model_reasoning_effort = "medium"
+#
+# Deprecated alias (still supported for compatibility):
+# explore_model_reasoning_effort = "medium"
+
+# Optional reasoning effort for spawned subagents (defaults to the active effort for that turn).
+# subagent_model_reasoning_effort = "medium"
+
 # Reasoning summary: auto | concise | detailed | none (default: auto)
 model_reasoning_summary = "auto"
 
@@ -55,17 +73,14 @@ model_verbosity = "medium"
 # Force-enable reasoning summaries for current model (default: false)
 model_supports_reasoning_summaries = false
 
-# Force reasoning summary format: none | experimental (default: none)
-model_reasoning_summary_format = "none"
-
 ################################################################################
 # Instruction Overrides
 ################################################################################
 
-# Additional user instructions appended after AGENTS.md. Default: unset.
+# Additional user instructions inject before AGENTS.md. Default: unset.
 # developer_instructions = ""
 
-# Optional legacy base instructions override (prefer AGENTS.md). Default: unset.
+# (Ignored) Optional legacy base instructions override (prefer AGENTS.md). Default: unset.
 # instructions = ""
 
 # Inline override for the history compaction prompt. Default: unset.
@@ -220,13 +235,12 @@ view_image = true
 [features]
 # Leave this table empty to accept defaults. Set explicit booleans to opt in/out.
 unified_exec = false
-rmcp_client = false
 apply_patch_freeform = false
 view_image_tool = true
 web_search_request = false
-ghost_commit = false
 enable_experimental_windows_sandbox = false
 skills = false
+mini_subagents = true
 
 ################################################################################
 # Experimental toggles (legacy; prefer [features])

@@ -392,7 +392,9 @@ impl AskUserQuestionOverlay {
         self.mode = Mode::Review;
         self.error = None;
         self.state.reset();
-        self.state.selected_idx = Some(0);
+        self.state.selected_idx = Some(self.questions.len());
+        self.state
+            .ensure_visible(self.rows_len(), self.max_visible_rows());
         self.return_to_review = true;
     }
 
@@ -998,5 +1000,125 @@ impl crate::render::renderable::Renderable for AskUserQuestionOverlay {
             height: 1,
         };
         self.footer_hint().dim().render(hint_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn option(label: &str) -> codex_core::protocol::AskUserQuestionOption {
+        codex_core::protocol::AskUserQuestionOption {
+            label: label.to_string(),
+            description: "".to_string(),
+        }
+    }
+
+    fn question(header: &str, multi_select: bool, options: &[&str]) -> AskUserQuestion {
+        AskUserQuestion {
+            question: format!("Question {header}?"),
+            header: header.to_string(),
+            options: options.iter().copied().map(option).collect(),
+            multi_select,
+        }
+    }
+
+    fn make_overlay(
+        questions: Vec<AskUserQuestion>,
+    ) -> (
+        AskUserQuestionOverlay,
+        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) {
+        let (tx, rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx);
+        let ev = AskUserQuestionRequestEvent {
+            call_id: "call-1".to_string(),
+            questions,
+        };
+        (
+            AskUserQuestionOverlay::new("ask-1".to_string(), ev, app_event_tx),
+            rx,
+        )
+    }
+
+    #[test]
+    fn review_defaults_to_submit() {
+        let (mut overlay, mut rx) = make_overlay(vec![question("Q1", false, &["A", "B"])]);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn enter_in_review_submits() {
+        let (mut overlay, mut rx) = make_overlay(vec![question("Q1", false, &["A", "B"])]);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let AppEvent::CodexOp(op) = rx.try_recv().expect("submit op") else {
+            panic!("expected CodexOp");
+        };
+        match op {
+            Op::ResolveAskUserQuestion { id, response } => {
+                assert_eq!(id, "ask-1");
+                assert_eq!(
+                    response,
+                    AskUserQuestionResponse::Answered {
+                        answers: HashMap::from([("Q1".to_string(), "A".to_string())])
+                    }
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn editing_from_review_still_possible() {
+        let (mut overlay, mut rx) = make_overlay(vec![
+            question("Q1", false, &["A", "B"]),
+            question("Q2", false, &["C", "D"]),
+        ]);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
+        assert!(rx.try_recv().is_err());
+
+        // Edit Q1 from review.
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert_eq!(overlay.current_idx, 0);
+
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
+
+        // Submit.
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let AppEvent::CodexOp(op) = rx.try_recv().expect("submit op") else {
+            panic!("expected CodexOp");
+        };
+        match op {
+            Op::ResolveAskUserQuestion { response, .. } => {
+                assert_eq!(
+                    response,
+                    AskUserQuestionResponse::Answered {
+                        answers: HashMap::from([
+                            ("Q1".to_string(), "B".to_string()),
+                            ("Q2".to_string(), "D".to_string())
+                        ])
+                    }
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
     }
 }

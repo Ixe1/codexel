@@ -17,6 +17,15 @@ use codex_protocol::approvals::ElicitationRequestEvent;
 
 use super::ChatWidget;
 
+#[derive(Debug, Clone)]
+pub(crate) struct CompletedLspToolCall {
+    pub(crate) tool_name: String,
+    pub(crate) arguments: String,
+    pub(crate) output: String,
+    pub(crate) success: bool,
+    pub(crate) duration: Option<std::time::Duration>,
+}
+
 #[derive(Debug)]
 pub(crate) enum QueuedInterrupt {
     ExecApproval(String, ExecApprovalRequestEvent),
@@ -28,6 +37,7 @@ pub(crate) enum QueuedInterrupt {
     ExecEnd(ExecCommandEndEvent),
     McpBegin(McpToolCallBeginEvent),
     McpEnd(McpToolCallEndEvent),
+    LspToolCall(CompletedLspToolCall),
     SubAgentBegin(SubAgentToolCallBeginEvent),
     SubAgentActivity(SubAgentToolCallActivityEvent),
     SubAgentTokens(SubAgentToolCallTokensEvent),
@@ -94,6 +104,10 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::McpEnd(ev));
     }
 
+    pub(crate) fn push_lsp_tool_call(&mut self, ev: CompletedLspToolCall) {
+        self.queue.push_back(QueuedInterrupt::LspToolCall(ev));
+    }
+
     pub(crate) fn push_subagent_begin(&mut self, ev: SubAgentToolCallBeginEvent) {
         self.queue.push_back(QueuedInterrupt::SubAgentBegin(ev));
     }
@@ -132,6 +146,7 @@ impl InterruptManager {
                 QueuedInterrupt::ExecEnd(ev) => chat.handle_exec_end_now(ev),
                 QueuedInterrupt::McpBegin(ev) => chat.handle_mcp_begin_now(ev),
                 QueuedInterrupt::McpEnd(ev) => chat.handle_mcp_end_now(ev),
+                QueuedInterrupt::LspToolCall(ev) => chat.handle_lsp_tool_call_now(ev),
                 QueuedInterrupt::SubAgentBegin(ev) => chat.handle_subagent_begin_now(ev),
                 QueuedInterrupt::SubAgentActivity(ev) => chat.handle_subagent_activity_now(ev),
                 QueuedInterrupt::SubAgentTokens(ev) => chat.handle_subagent_tokens_now(ev),

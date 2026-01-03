@@ -239,6 +239,136 @@ async fn resumed_session_does_not_auto_execute_plan() {
     );
 }
 
+#[tokio::test]
+async fn resumed_interrupted_session_prompts_before_continuing() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".to_string(),
+                images: None,
+            }),
+            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "partial".to_string(),
+            }),
+            EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
+                reason: codex_core::protocol::TurnAbortReason::Interrupted,
+            }),
+        ]),
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(
+        !chat.bottom_pane.is_normal_backtrack_mode(),
+        "expected resume prompt overlay to be active"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+
+    let mut continue_text = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::QueueUserText(text) = ev {
+            continue_text = Some(text);
+            break;
+        }
+    }
+
+    assert_eq!(
+        continue_text.expect("expected QueueUserText from resume prompt"),
+        "Continue from where you left off. Do not re-run tool calls that already completed; use the outputs above. If you need to rerun a tool, ask first."
+    );
+}
+
+#[tokio::test]
+async fn resumed_completed_exploring_commands_do_not_prompt() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None).await;
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".to_string(),
+                images: None,
+            }),
+            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                call_id: "call-1".to_string(),
+                process_id: None,
+                turn_id: "turn-1".to_string(),
+                command: vec!["cat".to_string(), "README.md".to_string()],
+                cwd: PathBuf::from("/home/user/project"),
+                parsed_cmd: vec![ParsedCommand::Read {
+                    cmd: "cat README.md".to_string(),
+                    name: "cat".to_string(),
+                    path: PathBuf::from("/home/user/project/README.md"),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+            }),
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "call-1".to_string(),
+                process_id: None,
+                turn_id: "turn-1".to_string(),
+                command: vec!["cat".to_string(), "README.md".to_string()],
+                cwd: PathBuf::from("/home/user/project"),
+                parsed_cmd: vec![ParsedCommand::Read {
+                    cmd: "cat README.md".to_string(),
+                    name: "cat".to_string(),
+                    path: PathBuf::from("/home/user/project/README.md"),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: "contents".to_string(),
+                stderr: String::new(),
+                aggregated_output: "contents".to_string(),
+                exit_code: 0,
+                duration: std::time::Duration::from_millis(5),
+                formatted_output: "contents".to_string(),
+            }),
+            EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: Some("done".to_string()),
+            }),
+        ]),
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(
+        chat.is_normal_backtrack_mode(),
+        "expected resume replay to avoid showing interruption prompt overlay"
+    );
+}
+
 /// Entering review mode uses the hint provided by the review request.
 #[tokio::test]
 async fn entered_review_mode_uses_request_hint() {
@@ -460,6 +590,7 @@ async fn make_chatwidget_manual(
         active_cell: None,
         active_subagent_group: None,
         config: cfg.clone(),
+        lsp_manager: codex_lsp::LspManager::new(codex_lsp::LspManagerConfig::default()),
         model_family: ModelsManager::construct_model_family_offline(&resolved_model, &cfg),
         auth_manager: auth_manager.clone(),
         models_manager: Arc::new(ModelsManager::new(auth_manager)),
@@ -475,6 +606,8 @@ async fn make_chatwidget_manual(
         stream_controller: None,
         running_commands: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
+        pending_lsp_tool_calls: HashMap::new(),
+        pending_apply_patch_calls: HashSet::new(),
         last_unified_wait: None,
         task_complete_pending: false,
         mcp_startup_status: None,
@@ -483,12 +616,14 @@ async fn make_chatwidget_manual(
         full_reasoning_buffer: String::new(),
         current_status_header: String::from("Ready"),
         retry_status_header: None,
-        plan_variants_progress: None,
         conversation_id: None,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
+        resume_last_turn_aborted: false,
+        resume_had_partial_output: false,
+        resume_had_in_progress_tools: false,
         pending_notification: None,
         is_review_mode: false,
         pre_review_token_info: None,
@@ -557,6 +692,55 @@ fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUsageInfo {
         last_token_usage: usage(total_tokens),
         model_context_window: Some(context_window),
     }
+}
+
+#[tokio::test]
+async fn lsp_tool_calls_render_in_history() {
+    let (mut chat, _app_event_tx, mut app_ev_rx, _op_rx) =
+        make_chatwidget_manual_with_sender().await;
+
+    chat.dispatch_event_msg(
+        None,
+        EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+            item: codex_protocol::models::ResponseItem::FunctionCall {
+                id: None,
+                name: "lsp_definition".to_string(),
+                arguments: r#"{"file_path":"C:\\repo\\src\\main.rs","line":1,"character":1}"#
+                    .to_string(),
+                call_id: "call-1".to_string(),
+            },
+        }),
+        false,
+    );
+
+    chat.dispatch_event_msg(
+        None,
+        EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+            item: codex_protocol::models::ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload {
+                    content: r#"{"locations":[]}"#.to_string(),
+                    success: Some(true),
+                    ..Default::default()
+                },
+            },
+        }),
+        false,
+    );
+
+    let rendered: String = drain_insert_history(&mut app_ev_rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect();
+
+    assert!(
+        rendered.contains("lsp_definition"),
+        "expected lsp tool call to be visible in history, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("\"locations\""),
+        "expected lsp tool output to be visible in history, got:\n{rendered}"
+    );
 }
 
 #[tokio::test]
@@ -1383,18 +1567,6 @@ async fn slash_resume_opens_picker() {
 }
 
 #[tokio::test]
-async fn slash_undo_sends_op() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-
-    chat.dispatch_command(SlashCommand::Undo);
-
-    match rx.try_recv() {
-        Ok(AppEvent::CodexOp(Op::Undo)) => {}
-        other => panic!("expected AppEvent::CodexOp(Op::Undo), got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn slash_rollout_displays_current_path() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     let rollout_path = PathBuf::from("/tmp/codex-test-rollout.jsonl");
@@ -1440,6 +1612,7 @@ async fn subagent_history_cell_keeps_updating_after_other_history_is_inserted() 
             description: "Alpha task".to_string(),
             label: "alpha".to_string(),
             prompt: "Prompt".to_string(),
+            model: None,
         },
     });
 
@@ -3050,11 +3223,13 @@ async fn stream_error_updates_status_indicator() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
     let msg = "Reconnecting... 2/5";
+    let details = "Idle timeout waiting for SSE";
     chat.handle_codex_event(Event {
         id: "sub-1".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: msg.to_string(),
             codex_error_info: Some(CodexErrorInfo::Other),
+            additional_details: Some(details.to_string()),
         }),
     });
 
@@ -3068,6 +3243,7 @@ async fn stream_error_updates_status_indicator() {
         .status_widget()
         .expect("status indicator should be visible");
     assert_eq!(status.header(), msg);
+    assert_eq!(status.details(), Some(details));
 }
 
 #[tokio::test]
@@ -3104,6 +3280,7 @@ async fn stream_recovery_restores_previous_status_header() {
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 1/5".to_string(),
             codex_error_info: Some(CodexErrorInfo::Other),
+            additional_details: None,
         }),
     });
     drain_insert_history(&mut rx);
@@ -3119,6 +3296,7 @@ async fn stream_recovery_restores_previous_status_header() {
         .status_widget()
         .expect("status indicator should be visible");
     assert_eq!(status.header(), "Working");
+    assert_eq!(status.details(), None);
     assert!(chat.retry_status_header.is_none());
 }
 

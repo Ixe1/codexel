@@ -16,6 +16,8 @@ use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
 use crate::rollout::RolloutRecorder;
 use crate::skills::SkillsManager;
+use codex_lsp::LspManager;
+use codex_lsp::LspManagerConfig;
 use codex_protocol::ConversationId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
@@ -45,6 +47,7 @@ pub struct ConversationManager {
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
     skills_manager: Arc<SkillsManager>,
+    lsp_manager: LspManager,
     session_source: SessionSource,
     #[cfg(any(test, feature = "test-support"))]
     _test_codex_home_guard: Option<TempDir>,
@@ -59,6 +62,7 @@ impl ConversationManager {
             session_source,
             models_manager: Arc::new(ModelsManager::new(auth_manager)),
             skills_manager,
+            lsp_manager: LspManager::new(LspManagerConfig::default()),
             #[cfg(any(test, feature = "test-support"))]
             _test_codex_home_guard: None,
         }
@@ -91,6 +95,7 @@ impl ConversationManager {
             session_source: SessionSource::Exec,
             models_manager: Arc::new(ModelsManager::with_provider(auth_manager, provider)),
             skills_manager,
+            lsp_manager: LspManager::new(LspManagerConfig::default()),
             _test_codex_home_guard: None,
         }
     }
@@ -101,6 +106,10 @@ impl ConversationManager {
 
     pub fn skills_manager(&self) -> Arc<SkillsManager> {
         self.skills_manager.clone()
+    }
+
+    pub fn lsp_manager(&self) -> LspManager {
+        self.lsp_manager.clone()
     }
 
     pub async fn new_conversation(&self, config: Config) -> CodexResult<NewConversation> {
@@ -126,6 +135,7 @@ impl ConversationManager {
             auth_manager,
             models_manager,
             self.skills_manager.clone(),
+            self.lsp_manager.clone(),
             InitialHistory::New,
             self.session_source.clone(),
         )
@@ -204,6 +214,7 @@ impl ConversationManager {
             auth_manager,
             self.models_manager.clone(),
             self.skills_manager.clone(),
+            self.lsp_manager.clone(),
             initial_history,
             self.session_source.clone(),
         )
@@ -246,6 +257,7 @@ impl ConversationManager {
             auth_manager,
             self.models_manager.clone(),
             self.skills_manager.clone(),
+            self.lsp_manager.clone(),
             history,
             self.session_source.clone(),
         )
@@ -401,6 +413,7 @@ mod tests {
             RolloutItem::ResponseItem(items[0].clone()),
             RolloutItem::ResponseItem(items[1].clone()),
             RolloutItem::ResponseItem(items[2].clone()),
+            RolloutItem::ResponseItem(items[3].clone()),
         ];
 
         assert_eq!(

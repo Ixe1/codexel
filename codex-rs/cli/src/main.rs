@@ -131,6 +131,9 @@ enum Subcommand {
 
     /// Inspect feature flags.
     Features(FeaturesCli),
+
+    /// Inspect Language Server Protocol (LSP) configuration and server discovery.
+    Lsp(LspCli),
 }
 
 #[derive(Debug, Parser)]
@@ -236,6 +239,20 @@ enum LoginSubcommand {
 #[derive(Debug, Parser)]
 struct LogoutCommand {
     #[clap(skip)]
+    config_overrides: CliConfigOverrides,
+}
+
+#[derive(Debug, Parser)]
+struct LspCli {
+    /// Optional working directory to inspect (defaults to current directory).
+    #[arg(long, value_name = "DIR")]
+    cwd: Option<PathBuf>,
+
+    /// Optional config profile to use.
+    #[arg(long = "profile", value_name = "PROFILE")]
+    config_profile: Option<String>,
+
+    #[clap(flatten)]
     config_overrides: CliConfigOverrides,
 }
 
@@ -645,6 +662,37 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 }
             }
         },
+        Some(Subcommand::Lsp(mut lsp_cli)) => {
+            prepend_config_flags(&mut lsp_cli.config_overrides, root_config_overrides.clone());
+
+            let cli_kv_overrides = lsp_cli
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+
+            let overrides = ConfigOverrides {
+                cwd: lsp_cli.cwd.take(),
+                config_profile: lsp_cli.config_profile.take(),
+                ..Default::default()
+            };
+
+            let config =
+                Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides)
+                    .await?;
+
+            if !config.features.enabled(Feature::Lsp) {
+                println!(
+                    "LSP is disabled. Enable `[features].lsp = true` in config.toml to use LSP."
+                );
+                return Ok(());
+            }
+
+            let mut lsp_config = config.lsp.manager.clone();
+            lsp_config.enabled = true;
+            let lsp = codex_lsp::LspManager::new(lsp_config);
+            let status = lsp.status(&config.cwd).await?;
+            println!("{}", codex_lsp::render_lsp_status(&status));
+        }
     }
 
     Ok(())

@@ -12,6 +12,7 @@ dist/
 build/
 out/
 storybook-static/
+/codex-rs/**/target-test/
 
 # ignore README for publishing
 codex-cli/README.md
@@ -67,6 +68,9 @@ coverage/
 # personal files
 personal/
 .codexel/
+
+# lsp smoke files (temporary)
+tmp/lsp-smoke/
 
 # os
 .DS_Store

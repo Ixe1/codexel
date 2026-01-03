@@ -392,7 +392,9 @@ impl AskUserQuestionOverlay {
         self.mode = Mode::Review;
         self.error = None;
         self.state.reset();
-        self.state.selected_idx = Some(0);
+        self.state.selected_idx = Some(self.questions.len());
+        self.state
+            .ensure_visible(self.rows_len(), self.max_visible_rows());
         self.return_to_review = true;
     }
 
@@ -1050,10 +1052,9 @@ mod tests {
 
         overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
         assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
         assert!(rx.try_recv().is_err());
 
-        // Down to "Submit" row.
-        overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         overlay.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let AppEvent::CodexOp(op) = rx.try_recv().expect("submit op") else {
@@ -1099,18 +1100,17 @@ mod tests {
         overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
         overlay.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         assert_eq!(overlay.mode, Mode::Review);
+        assert_eq!(overlay.state.selected_idx, Some(overlay.questions.len()));
         assert!(rx.try_recv().is_err());
 
         // Edit Q1 from review.
-        overlay.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        overlay.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
         assert_eq!(overlay.current_idx, 0);
 
         overlay.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         assert_eq!(overlay.mode, Mode::Review);
 
         // Submit.
-        overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // Q2
-        overlay.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // Submit
         overlay.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         let AppEvent::CodexOp(op) = rx.try_recv().expect("submit op") else {

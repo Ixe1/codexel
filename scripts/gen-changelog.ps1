@@ -41,6 +41,24 @@ function Get-GroupForSubject([string]$Subject) {
     return "Other"
 }
 
+function Escape-MarkdownInlineText([string]$Line) {
+    # Make identifier-like tokens stable under Markdown + Prettier by rendering them as inline code.
+    # This avoids Prettier rewriting things like "mini_subagent_*" into emphasis.
+    # Skip segments that are already inside inline code spans.
+    $parts = $Line.Split('`')
+    for ($i = 0; $i -lt $parts.Length; $i += 2) {
+        $parts[$i] = [regex]::Replace($parts[$i], '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+_\*', {
+            param($m) '`' + $m.Value + '`'
+        })
+
+        $parts[$i] = [regex]::Replace($parts[$i], '\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b', {
+            param($m) '`' + $m.Value + '`'
+        })
+    }
+
+    return ($parts -join '`')
+}
+
 function Render-Details([string]$Range) {
     $revArgs = @("rev-list", "--reverse", $Range)
     if ($hasUpstream) {
@@ -81,6 +99,9 @@ function Render-Details([string]$Range) {
 
         $group = Get-GroupForSubject $subject
         $lines = $body -split "`n", -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $lines[$i] = Escape-MarkdownInlineText $lines[$i]
+        }
         $lines[0] = "- " + $lines[0]
         $entry = ($lines -join $newline).TrimEnd()
         $groups[$group] += $entry
@@ -92,6 +113,7 @@ function Render-Details([string]$Range) {
             continue
         }
         $out += "#### $($kvp.Key)"
+        $out += ""
         $out += $kvp.Value
         $out += ""
     }
@@ -112,7 +134,7 @@ $updated = [regex]::Replace($text, $pattern, {
     if ([string]::IsNullOrWhiteSpace($details)) {
         $details = "_No fork-only changes yet._"
     }
-    return "<!-- BEGIN GENERATED DETAILS: range=$range -->$newline$details$newline<!-- END GENERATED DETAILS -->"
+    return "<!-- BEGIN GENERATED DETAILS: range=$range -->$($newline)$($newline)$details$($newline)<!-- END GENERATED DETAILS -->"
 }, [System.Text.RegularExpressions.RegexOptions]::Singleline)
 
 if ($updated -eq $text) {

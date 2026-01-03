@@ -7,6 +7,8 @@ use crate::tools::handlers::APPROVE_PLAN_TOOL_NAME;
 use crate::tools::handlers::ASK_USER_QUESTION_TOOL_NAME;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::PROPOSE_PLAN_VARIANTS_TOOL_NAME;
+use crate::tools::handlers::SPAWN_MINI_SUBAGENT_LABEL_PREFIX;
+use crate::tools::handlers::SPAWN_MINI_SUBAGENT_TOOL_NAME;
 use crate::tools::handlers::SPAWN_SUBAGENT_LABEL_PREFIX;
 use crate::tools::handlers::SPAWN_SUBAGENT_TOOL_NAME;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
@@ -24,11 +26,16 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 pub(crate) const ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS: &str = r#"## AskUserQuestion
-Use `ask_user_question` when you need user input to proceed during execution. This helps you:
+Use `ask_user_question` whenever you need user input to proceed during execution. This helps you:
 1. Gather preferences or requirements (e.g., scope, trade-offs).
 2. Clarify ambiguous instructions.
 3. Get a decision on implementation choices as you work.
 4. Offer a small set of clear options when multiple directions are reasonable.
+
+Decision rule:
+- If you're about to ask the user a question (e.g., "should I...?", "which one...?", "can you...?"), do not ask it in plain text. Call `ask_user_question` and wait for the tool result.
+- If there are multiple reasonable interpretations or choices that would materially change the output, side effects, or time/cost, pause and ask via this tool instead of guessing.
+- If the user explicitly delegates (e.g., "use your best judgment") or a safe default is clearly implied, proceed and state your assumption.
 
 Usage notes:
 - Do not ask questions in plain text; call `ask_user_question` and wait for the tool result.
@@ -38,12 +45,43 @@ Usage notes:
 - If you recommend an option, make it the first option and add "(Recommended)" to the label.
 - Do not include numbering in option labels (e.g. "1:", "2.", "A)"); the UI provides numbering.
 
+Tool constraints:
+- 1-4 questions per call.
+- Each question: `header` max 12 chars; `question` must end with a '?'.
+- Each question must include 2-4 `options`; do not include an "Other" option (the UI provides it automatically).
+- Each option: `label` is 1-5 words; include a `description` with trade-offs.
+
 Example:
 Call `ask_user_question` with a single question and a few options, then wait for the answer and proceed.
 "#;
 
+pub(crate) const CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS: &str = r#"## Clarification Policy
+When a request is underspecified, avoid guessing. Ask clarifying questions before producing a plan or taking actions that depend on missing details.
+
+Rules:
+- If there are multiple reasonable interpretations that would materially change the outcome (scope, approach, output, trade-offs, time/cost, risk), pause and ask questions instead of assuming.
+- Ask as many questions as needed to remove material ambiguity. `ask_user_question` supports 1-4 questions per call; if more are needed, ask another set.
+- Prefer multiple-choice options with clear trade-offs, and keep a free-text escape hatch (the UI provides an "Other" option automatically).
+- If the user explicitly delegates (e.g., "use your best judgment" / "surprise me"), proceed and state the assumptions you chose, plus the main knobs the user can tweak.
+"#;
+
+pub(crate) const LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS: &str = r#"## LSP-first navigation
+When LSP tools are available and the file/language is supported:
+- Prefer symbol-aware navigation via `lsp_definition` and `lsp_references` over `rg` for definition/usage questions.
+- Use `lsp_diagnostics` for current errors/warnings.
+- Use `rg` for broad text search (log strings, config keys) and as a fallback if LSP returns errors or empty results unexpectedly.
+- Treat `lsp_document_symbols` as best-effort (it may return empty in some environments).
+- Prefer absolute paths for `root`, `file_path`, and `path`. If a path is relative, it is resolved relative to `root` (which defaults to the session working directory).
+
+For broad repo exploration (mapping an unfamiliar area, finding entry points, summarizing how something works), prefer `spawn_mini_subagent` before doing multiple sequential `lsp_*` calls or reaching for `rg`.
+"#;
+
 pub(crate) const SPAWN_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnSubagent
-Use `spawn_subagent` to delegate short, read-only research tasks. Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
+Use `spawn_subagent` to delegate short, read-only research tasks (repo exploration, tracing control flow, summarizing how something works). Subagents cannot edit files, cannot ask the user questions, and should return a concise plain-text response.
+
+Default behavior:
+- Prefer `spawn_mini_subagent` for quick/cheap repo exploration and mapping.
+- Use `spawn_subagent` when a mini subagent is likely insufficient (complex architecture decisions, subtle concurrency issues, high-stakes security work, or if mini results are missing key context).
 
 When to use it:
 - Broad context gathering (you don't know the entry point yet).
@@ -51,7 +89,7 @@ When to use it:
 - Focused research tasks (e.g. “find where X is configured”, “summarize how Y works”).
 
 When not to use it:
-- Needle queries where you already know the file/symbol, or you're only checking 1–3 files (do a direct `rg` / targeted read instead).
+- Needle queries where you already know the file/symbol, or you're only checking 1–3 files (do a direct `lsp_definition`/`lsp_references` or `rg` / targeted read instead).
 - Anything that requires writing code or asking the user a question.
 
 Requirements:
@@ -62,9 +100,12 @@ Requirements:
 Prompt tips:
 - Ask for specific outputs (e.g. “list the relevant files and explain the control flow”).
 - Prefer small, targeted file reads over dumping large files.
+- If you need a control-flow answer, ask for a short “entry point → key calls → result” trace.
+- If you need multiple answers, assign one question per subagent (avoid “do everything” prompts).
 
 Parallelism:
 - If you have multiple independent research questions, prefer launching multiple subagents in parallel rather than running them serially.
+- Prefer 2–3 small, differently-scoped prompts over 1 big prompt (faster convergence and fewer blind spots).
 
 Using results:
 - The subagent response is input for you. Summarize the relevant findings back to the user (include key file paths and small snippets when helpful).
@@ -78,6 +119,51 @@ Example tool call:
 Example (parallel):
 `spawn_subagent({ "description": "Locate config schema for auth", "prompt": "Find where auth config is defined and how it is loaded. Return files + key functions.", "label": "auth_cfg" })`
 `spawn_subagent({ "description": "Trace token usage in requests", "prompt": "Find where tokens are attached to outbound requests. Return files + key call sites.", "label": "auth_use" })`
+
+Example (control flow):
+`spawn_subagent({ "description": "Trace request path for /responses", "prompt": "Trace the control flow from the public API entry point to the outbound HTTP request for /responses. Return files + key functions + a short call chain.", "label": "responses_flow" })`
+"#;
+
+pub(crate) const SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = r#"## SpawnMiniSubagent
+Use `spawn_mini_subagent` for the same kind of short, read-only research as `spawn_subagent`, but when you explicitly want a fast/cheap subagent.
+
+Key properties:
+- This tool defaults to `gpt-5.1-codex-mini` (configurable via `mini_subagent_model`).
+- Mini subagents cannot edit files and cannot ask the user questions.
+
+Default behavior (strongly preferred):
+- For repo exploration (quick mapping, finding relevant files, entry points, or call chains), treat mini subagents as your first move.
+- If you expect to do 2+ repo-search/read steps (multiple `lsp_*` calls or `rg` searches, multiple file opens), spawn 2–3 mini subagents first, unless you already know the exact file/symbol to read.
+
+When to use it:
+- Quick repo mapping (find relevant files, entry points, call chains).
+- Mechanical migrations where you mostly need search + pattern matching.
+- Lint/snapshot churn where verification is easy.
+
+When NOT to use it:
+- Complex architecture decisions, subtle concurrency issues, or high-stakes security work.
+- Situations where you need deep reasoning and correctness guarantees beyond what a small model can provide.
+
+Usage guidance:
+- Provide a self-contained prompt with explicit output requirements.
+- Prefer 1 question per mini subagent; spawn multiple in parallel if needed.
+"#;
+
+pub(crate) const WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS: &str = r#"## Web UI Quality Bar (only when building/changing web UI)
+When the user's request involves a web UI, raise the quality bar beyond "it works".
+
+Principles:
+- Prioritize usability and clarity: clear hierarchy, predictable behavior, good defaults, minimal surprise.
+- Prefer a small design system over ad-hoc styles: define tokens (CSS variables) for color, spacing, radius, shadow, typography; reuse them consistently.
+- Make states first-class: loading, empty, error, disabled, slow network, long text, and small screens should look intentional.
+- Accessibility is required: semantic HTML, keyboard navigation, visible focus, sufficient contrast, sensible ARIA only when needed.
+- Responsive by default: mobile-first layout that scales up; avoid hard-coded widths and fragile pixel-perfect positioning.
+- Polish with restraint: subtle transitions, hover/pressed feedback, and micro-interactions only when they reduce confusion.
+
+Deliverables to include in the plan/output:
+- "UX goals" paragraph (what should feel better, not just what changes).
+- A short "Design system" section (tokens + reusable components; avoid one-off styling).
+- Verification: exact manual steps (mouse + keyboard) and any automated checks/tests (e.g. unit/e2e/lint).
 "#;
 
 pub(crate) fn prepend_ask_user_question_developer_instructions(
@@ -97,11 +183,63 @@ pub(crate) fn prepend_ask_user_question_developer_instructions(
     }
 }
 
+pub(crate) fn prepend_clarification_policy_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## Clarification Policy")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
+pub(crate) fn prepend_lsp_navigation_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## LSP-first navigation")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(LSP_NAVIGATION_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
+pub(crate) fn prepend_web_ui_quality_bar_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && (existing.contains("## Web UI Quality Bar")
+            || existing.contains("Web UI Quality Bar (only when building/changing web UI)"))
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(WEB_UI_QUALITY_BAR_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
 pub(crate) fn prepend_spawn_subagent_developer_instructions(
     developer_instructions: Option<String>,
 ) -> Option<String> {
     if let Some(existing) = developer_instructions.as_deref()
-        && (existing.contains(SPAWN_SUBAGENT_TOOL_NAME) || existing.contains("SpawnSubagent"))
+        && existing.contains("## SpawnSubagent")
     {
         return developer_instructions;
     }
@@ -114,13 +252,32 @@ pub(crate) fn prepend_spawn_subagent_developer_instructions(
     }
 }
 
+pub(crate) fn prepend_spawn_mini_subagent_developer_instructions(
+    developer_instructions: Option<String>,
+) -> Option<String> {
+    if let Some(existing) = developer_instructions.as_deref()
+        && existing.contains("## SpawnMiniSubagent")
+    {
+        return developer_instructions;
+    }
+
+    match developer_instructions {
+        Some(existing) => Some(format!(
+            "{SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS}\n{existing}"
+        )),
+        None => Some(SPAWN_MINI_SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
+    pub include_plan_explore_tool: bool,
     pub include_spawn_subagent_tool: bool,
+    pub include_spawn_mini_subagent_tool: bool,
     pub experimental_supported_tools: Vec<String>,
 }
 
@@ -141,12 +298,31 @@ impl ToolsConfig {
             session_source,
             SessionSource::SubAgent(SubAgentSource::Other(label))
                 if label.starts_with(SPAWN_SUBAGENT_LABEL_PREFIX)
+                    || label.starts_with(SPAWN_MINI_SUBAGENT_LABEL_PREFIX)
         );
         let allow_apply_patch_tool = !disable_apply_patch_tool;
         let include_apply_patch_tool =
             allow_apply_patch_tool && features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_view_image_tool = features.enabled(Feature::ViewImageTool);
+        let include_plan_explore_tool = matches!(
+            session_source,
+            SessionSource::SubAgent(SubAgentSource::Other(label)) if label == "plan_mode"
+        );
+        let allow_subagent_tools = !matches!(session_source, SessionSource::SubAgent(_));
+        let mut experimental_supported_tools = model_family.experimental_supported_tools.clone();
+        if features.enabled(Feature::Lsp) {
+            for name in [
+                "lsp_diagnostics",
+                "lsp_definition",
+                "lsp_references",
+                "lsp_document_symbols",
+            ] {
+                if !experimental_supported_tools.iter().any(|t| t == name) {
+                    experimental_supported_tools.push(name.to_string());
+                }
+            }
+        }
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -182,8 +358,11 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             include_view_image_tool,
-            include_spawn_subagent_tool: !matches!(session_source, SessionSource::SubAgent(_)),
-            experimental_supported_tools: model_family.experimental_supported_tools.clone(),
+            include_plan_explore_tool,
+            include_spawn_subagent_tool: allow_subagent_tools,
+            include_spawn_mini_subagent_tool: allow_subagent_tools
+                && features.enabled(Feature::MiniSubagents),
+            experimental_supported_tools,
         }
     }
 }
@@ -446,7 +625,7 @@ fn create_ask_user_question_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: ASK_USER_QUESTION_TOOL_NAME.to_string(),
-        description: "Ask the user 1-4 multiple-choice questions during execution to clarify requirements. Do not ask these questions in plain text; call this tool to pause and wait. The UI always provides an 'Other' choice for custom text input."
+        description: "Ask the user 1-4 multiple-choice questions during execution to clarify requirements. Use this tool whenever you'd otherwise ask the user a question. Do not ask these questions in plain text; call this tool to pause and wait. The UI always provides an 'Other' choice for custom text input."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -561,6 +740,66 @@ fn create_propose_plan_variants_tool() -> ToolSpec {
     })
 }
 
+fn create_plan_explore_tool() -> ToolSpec {
+    let mut root_props = BTreeMap::new();
+    root_props.insert(
+        "goal".to_string(),
+        JsonSchema::String {
+            description: Some("The user's goal to plan for.".to_string()),
+        },
+    );
+    let mut explorer_props = BTreeMap::new();
+    explorer_props.insert(
+        "focus".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Required. One-sentence focus for this explorer (what to look for).".to_string(),
+            ),
+        },
+    );
+    explorer_props.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional. Human-friendly label shown in history; defaults to focus.".to_string(),
+            ),
+        },
+    );
+    explorer_props.insert(
+        "prompt".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional. Prompt to send to the subagent; defaults to goal + focus.".to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "explorers".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::Object {
+                properties: explorer_props,
+                required: Some(vec!["focus".to_string()]),
+                additional_properties: Some(false.into()),
+            }),
+            description: Some(
+                "Optional. Override the default 3 exploration subagents (order matters)."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: crate::tools::handlers::PLAN_EXPLORE_TOOL_NAME.to_string(),
+        description: "Run a short, read-only repo exploration pass (via a few exploration subagents) to ground /plan in concrete file paths and entry points.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: root_props,
+            required: Some(vec!["goal".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_spawn_subagent_tool() -> ToolSpec {
     let mut root_props = BTreeMap::new();
     root_props.insert(
@@ -574,7 +813,10 @@ fn create_spawn_subagent_tool() -> ToolSpec {
     root_props.insert(
         "prompt".to_string(),
         JsonSchema::String {
-            description: Some("Prompt to send to the read-only subagent.".to_string()),
+            description: Some(
+                "Self-contained prompt to send to the read-only subagent; ask for specific outputs (files, symbols, short control-flow traces). Use one question per subagent when parallelizing."
+                    .to_string(),
+            ),
         },
     );
     root_props.insert(
@@ -589,9 +831,49 @@ fn create_spawn_subagent_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: SPAWN_SUBAGENT_TOOL_NAME.to_string(),
-        description:
-            "Spawn a read-only subagent to handle a focused prompt and return its response."
-                .to_string(),
+        description: "Spawn a read-only subagent for focused repo research (no edits, no user questions) and return its response.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: root_props,
+            required: Some(vec!["description".to_string(), "prompt".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_spawn_mini_subagent_tool() -> ToolSpec {
+    let mut root_props = BTreeMap::new();
+    root_props.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Required one-sentence, human-friendly description shown in history.".to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "prompt".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Self-contained prompt to send to the read-only mini subagent; ask for specific outputs (files, symbols, short control-flow traces). Use one question per subagent when parallelizing."
+                    .to_string(),
+            ),
+        },
+    );
+    root_props.insert(
+        "label".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional short label for the subagent session (letters, numbers, _ or -)."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: SPAWN_MINI_SUBAGENT_TOOL_NAME.to_string(),
+        description: "Spawn a read-only mini subagent (always runs on gpt-5.1-codex-mini) for fast repo research; no edits, no user questions."
+            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties: root_props,
@@ -971,6 +1253,188 @@ fn create_read_file_tool() -> ToolSpec {
     })
 }
 
+fn create_lsp_diagnostics_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional file path (absolute path preferred). If relative, it is resolved relative to root. When omitted, returns diagnostics for all tracked files."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "max_results".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum number of diagnostics to return (defaults to 200).".to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_diagnostics".to_string(),
+        description:
+            "Returns current Language Server Protocol diagnostics for a workspace or file."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_definition_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "line".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based line number.".to_string()),
+        },
+    );
+    properties.insert(
+        "character".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based character offset (UTF-16).".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_definition".to_string(),
+        description: "Finds the definition location for the symbol at a position.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "file_path".to_string(),
+                "line".to_string(),
+                "character".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_references_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "line".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based line number.".to_string()),
+        },
+    );
+    properties.insert(
+        "character".to_string(),
+        JsonSchema::Number {
+            description: Some("1-based character offset (UTF-16).".to_string()),
+        },
+    );
+    properties.insert(
+        "include_declaration".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Whether to include the symbol's declaration in the results.".to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_references".to_string(),
+        description: "Finds references to the symbol at a position.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "file_path".to_string(),
+                "line".to_string(),
+                "character".to_string(),
+            ]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_lsp_document_symbols_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "root".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Workspace root directory (absolute path preferred). Defaults to the session working directory."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "File path (absolute path preferred). If relative, it is resolved relative to root."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "lsp_document_symbols".to_string(),
+        description: "Returns document symbols for a file (outline).".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["file_path".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_list_dir_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -1329,14 +1793,17 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::AskUserQuestionHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
+    use crate::tools::handlers::LspHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::PlanApprovalHandler;
+    use crate::tools::handlers::PlanExploreHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::PlanVariantsHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
+    use crate::tools::handlers::SpawnMiniSubagentHandler;
     use crate::tools::handlers::SpawnSubagentHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
@@ -1349,11 +1816,13 @@ pub(crate) fn build_specs(
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let plan_approval_handler = Arc::new(PlanApprovalHandler);
+    let plan_explore_handler = Arc::new(PlanExploreHandler);
     let plan_variants_handler = Arc::new(PlanVariantsHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
     let ask_user_question_handler = Arc::new(AskUserQuestionHandler);
     let spawn_subagent_handler = Arc::new(SpawnSubagentHandler);
+    let spawn_mini_subagent_handler = Arc::new(SpawnMiniSubagentHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
@@ -1406,9 +1875,22 @@ pub(crate) fn build_specs(
     builder.push_spec(create_propose_plan_variants_tool());
     builder.register_handler(PROPOSE_PLAN_VARIANTS_TOOL_NAME, plan_variants_handler);
 
+    if config.include_plan_explore_tool {
+        builder.push_spec(create_plan_explore_tool());
+        builder.register_handler(
+            crate::tools::handlers::PLAN_EXPLORE_TOOL_NAME,
+            plan_explore_handler,
+        );
+    }
+
     if config.include_spawn_subagent_tool {
         builder.push_spec_with_parallel_support(create_spawn_subagent_tool(), true);
         builder.register_handler(SPAWN_SUBAGENT_TOOL_NAME, spawn_subagent_handler);
+    }
+
+    if config.include_spawn_mini_subagent_tool {
+        builder.push_spec_with_parallel_support(create_spawn_mini_subagent_tool(), true);
+        builder.register_handler(SPAWN_MINI_SUBAGENT_TOOL_NAME, spawn_mini_subagent_handler);
     }
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
@@ -1430,6 +1912,46 @@ pub(crate) fn build_specs(
         let grep_files_handler = Arc::new(GrepFilesHandler);
         builder.push_spec_with_parallel_support(create_grep_files_tool(), true);
         builder.register_handler("grep_files", grep_files_handler);
+    }
+
+    if config
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool.starts_with("lsp_"))
+    {
+        let lsp_handler = Arc::new(LspHandler);
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_diagnostics")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_diagnostics_tool(), true);
+            builder.register_handler("lsp_diagnostics", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_definition")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_definition_tool(), true);
+            builder.register_handler("lsp_definition", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_references")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_references_tool(), true);
+            builder.register_handler("lsp_references", lsp_handler.clone());
+        }
+        if config
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == "lsp_document_symbols")
+        {
+            builder.push_spec_with_parallel_support(create_lsp_document_symbols_tool(), true);
+            builder.register_handler("lsp_document_symbols", lsp_handler);
+        }
     }
 
     if config
@@ -1598,6 +2120,48 @@ mod tests {
     }
 
     #[test]
+    fn test_ask_user_question_developer_instructions_regression() {
+        let instructions = ASK_USER_QUESTION_DEVELOPER_INSTRUCTIONS;
+        assert!(
+            instructions.contains("Do not ask questions in plain text"),
+            "expected the plain-text prohibition to be present"
+        );
+        assert!(
+            instructions.contains("If you're about to ask the user a question"),
+            "expected the decision rule to be present"
+        );
+        assert!(
+            instructions.contains("1-4 questions per call"),
+            "expected the question-count constraint to be present"
+        );
+        assert!(
+            instructions.contains("2-4 `options`"),
+            "expected the option-count constraint to be present"
+        );
+        assert!(
+            instructions.contains("must end with a '?'"),
+            "expected the question punctuation constraint to be present"
+        );
+    }
+
+    #[test]
+    fn test_clarification_policy_developer_instructions_regression() {
+        let instructions = CLARIFICATION_POLICY_DEVELOPER_INSTRUCTIONS;
+        assert!(
+            instructions.contains("If there are multiple reasonable interpretations"),
+            "expected the ambiguity decision rule to be present"
+        );
+        assert!(
+            instructions.contains("1-4 questions per call"),
+            "expected the ask_user_question per-call limit to be present"
+        );
+        assert!(
+            instructions.contains("use your best judgment"),
+            "expected the explicit delegation escape hatch to be present"
+        );
+    }
+
+    #[test]
     fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         let config = test_config();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5-codex", &config);
@@ -1637,6 +2201,7 @@ mod tests {
             create_approve_plan_tool(),
             create_propose_plan_variants_tool(),
             create_spawn_subagent_tool(),
+            create_spawn_mini_subagent_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1683,6 +2248,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1704,6 +2270,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1728,6 +2295,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1753,6 +2321,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1775,6 +2344,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "view_image",
             ],
         );
@@ -1795,6 +2365,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1816,6 +2387,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "view_image",
             ],
         );
@@ -1836,6 +2408,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1858,6 +2431,7 @@ mod tests {
         let (tools, _) = build_specs(&tools_config, None).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
         assert!(!tool_names.contains(&"spawn_subagent"));
+        assert!(!tool_names.contains(&"spawn_mini_subagent"));
         assert!(!tool_names.contains(&"apply_patch"));
     }
 
@@ -1877,6 +2451,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "apply_patch",
                 "view_image",
             ],
@@ -1901,6 +2476,7 @@ mod tests {
                 "approve_plan",
                 "propose_plan_variants",
                 "spawn_subagent",
+                "spawn_mini_subagent",
                 "web_search",
                 "view_image",
             ],

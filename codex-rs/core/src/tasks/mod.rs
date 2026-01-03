@@ -33,6 +33,7 @@ use codex_protocol::user_input::UserInput;
 pub(crate) use compact::CompactTask;
 pub(crate) use ghost_snapshot::GhostSnapshotTask;
 pub(crate) use plan::PlanTask;
+pub(crate) use plan::constrain_features_for_planning;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
 pub(crate) use undo::UndoTask;
@@ -237,8 +238,12 @@ impl Session {
             .abort(session_ctx, Arc::clone(&task.turn_context))
             .await;
 
+        self.cancel_active_subagent_tool_calls(task.turn_context.as_ref())
+            .await;
+
         let event = EventMsg::TurnAborted(TurnAbortedEvent { reason });
         self.send_event(task.turn_context.as_ref(), event).await;
+        self.flush_rollout().await;
     }
 }
 

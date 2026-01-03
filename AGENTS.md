@@ -23,6 +23,12 @@ In the `codex-rs` folder where the Rust code lives:
 - When cutting a release, update the release and upstream baseline SHAs in `CHANGELOG.md`,
   then rerun the generator.
 
+## Releases (Codexel vs codex-rs)
+
+- Codexel release tags that trigger the publishing workflows use `codexel-vX.Y.Z` (for example `codexel-v0.1.4`).
+- The upstream `codex-rs` Rust release workflow uses `rust-vX.Y.Z` tags.
+- A plain `vX.Y.Z` tag exists historically in this repo, but does not match those workflow triggers.
+
 ## Formatting, lint, tests
 
 Run `just fmt` (in `codex-rs` directory) automatically after making Rust code changes; do not ask for approval to run it.
@@ -104,6 +110,12 @@ If you don’t have the tool:
 - Tests should use `pretty_assertions::assert_eq` for clearer diffs. Import this at the top of the test module if it isn't already.
 - Prefer deep equals comparisons whenever possible. Perform `assert_eq!()` on entire objects, rather than individual fields.
 - Avoid mutating process environment in tests; prefer passing environment-derived flags or dependencies from above.
+
+### Spawning workspace binaries in tests (Cargo vs Buck2)
+
+- Prefer `codex_utils_cargo_bin::cargo_bin("...")` over `assert_cmd::Command::cargo_bin(...)` or `escargot` when tests need to spawn first-party binaries.
+  - Under Buck2, `CARGO_BIN_EXE_*` may be project-relative (e.g. `buck-out/...`), which breaks if a test changes its working directory. `codex_utils_cargo_bin::cargo_bin` resolves to an absolute path first.
+- When locating fixture files under Buck2, avoid `env!("CARGO_MANIFEST_DIR")` (Buck codegen sets it to `"."`). Prefer deriving paths from `codex_utils_cargo_bin::buck_project_root()` when needed.
 
 ### Integration tests (core)
 

@@ -1,22 +1,12 @@
 use async_trait::async_trait;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentInvocation;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::SubAgentToolCallActivityEvent;
-use codex_protocol::protocol::SubAgentToolCallBeginEvent;
-use codex_protocol::protocol::SubAgentToolCallEndEvent;
-use codex_protocol::protocol::SubAgentToolCallTokensEvent;
-use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio_util::sync::CancellationToken;
 
-use crate::codex_delegate::run_codex_conversation_one_shot;
 use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
@@ -82,6 +72,7 @@ pub(crate) fn parse_spawn_subagent_invocation(
         description,
         label,
         prompt: prompt.to_string(),
+        model: None,
     })
 }
 
@@ -116,7 +107,7 @@ impl ToolHandler for SpawnSubagentHandler {
             ));
         }
 
-        let invocation = parse_spawn_subagent_invocation(&arguments)
+        let mut invocation = parse_spawn_subagent_invocation(&arguments)
             .map_err(FunctionCallError::RespondToModel)?;
         let label = invocation.label.clone();
         let subagent_label = format!("{SPAWN_SUBAGENT_LABEL_PREFIX}_{label}");
@@ -125,8 +116,15 @@ impl ToolHandler for SpawnSubagentHandler {
         cfg.developer_instructions = Some(build_subagent_developer_instructions(
             cfg.developer_instructions.as_deref().unwrap_or_default(),
         ));
-        cfg.model = Some(turn.client.get_model());
-        cfg.model_reasoning_effort = turn.client.get_reasoning_effort();
+        cfg.model = Some(
+            turn.subagent_model
+                .clone()
+                .unwrap_or_else(|| turn.client.get_model()),
+        );
+        invocation.model = cfg.model.clone();
+        cfg.model_reasoning_effort = turn
+            .subagent_reasoning_effort
+            .or(turn.client.get_reasoning_effort());
         cfg.model_reasoning_summary = turn.client.get_reasoning_summary();
 
         let mut features = cfg.features.clone();
@@ -138,142 +136,21 @@ impl ToolHandler for SpawnSubagentHandler {
             codex_protocol::protocol::SandboxPolicy::ReadOnly,
         );
 
-        session
-            .send_event(
-                turn.as_ref(),
-                EventMsg::SubAgentToolCallBegin(SubAgentToolCallBeginEvent {
-                    call_id: call_id.clone(),
-                    invocation: invocation.clone(),
-                }),
-            )
-            .await;
-        session
-            .send_event(
-                turn.as_ref(),
-                EventMsg::SubAgentToolCallActivity(SubAgentToolCallActivityEvent {
-                    call_id: call_id.clone(),
-                    activity: "starting".to_string(),
-                }),
-            )
-            .await;
-
-        let started_at = Instant::now();
-        let cancel = session
-            .turn_cancellation_token(&turn.sub_id)
-            .await
-            .map_or_else(CancellationToken::new, |token| token.child_token());
-        let _cancel_guard = CancelOnDrop::new(cancel.clone());
-
         let input = vec![UserInput::Text {
             text: invocation.prompt.clone(),
         }];
 
-        let io = match run_codex_conversation_one_shot(
-            cfg,
-            Arc::clone(&session.services.auth_manager),
-            Arc::clone(&session.services.models_manager),
-            input,
+        let response = crate::tools::subagent_runner::run_subagent_tool_call(
             Arc::clone(&session),
             Arc::clone(&turn),
-            cancel,
-            None,
+            call_id,
+            invocation,
+            cfg,
+            input,
             SubAgentSource::Other(subagent_label),
         )
         .await
-        {
-            Ok(io) => io,
-            Err(err) => {
-                let message = format!("failed to start subagent: {err}");
-                session
-                    .send_event(
-                        turn.as_ref(),
-                        EventMsg::SubAgentToolCallEnd(SubAgentToolCallEndEvent {
-                            call_id: call_id.clone(),
-                            invocation: invocation.clone(),
-                            duration: started_at.elapsed(),
-                            tokens: None,
-                            result: Err(message.clone()),
-                        }),
-                    )
-                    .await;
-                return Err(FunctionCallError::RespondToModel(message));
-            }
-        };
-
-        let mut last_agent_message: Option<String> = None;
-        let mut last_activity: Option<String> = None;
-        let mut tokens: i64 = 0;
-        let mut last_reported_tokens: Option<i64> = None;
-        let mut last_reported_at = Instant::now();
-        while let Ok(event) = io.rx_event.recv().await {
-            let Event { id: _, msg } = event;
-
-            if let Some(activity) = activity_for_event(&msg)
-                && last_activity.as_deref() != Some(activity.as_str())
-            {
-                last_activity = Some(activity.clone());
-                session
-                    .send_event(
-                        turn.as_ref(),
-                        EventMsg::SubAgentToolCallActivity(SubAgentToolCallActivityEvent {
-                            call_id: call_id.clone(),
-                            activity,
-                        }),
-                    )
-                    .await;
-            }
-
-            match msg {
-                EventMsg::TaskComplete(ev) => {
-                    last_agent_message = ev.last_agent_message;
-                    break;
-                }
-                EventMsg::TurnAborted(_) => break,
-                EventMsg::TokenCount(TokenCountEvent {
-                    info: Some(info), ..
-                }) => {
-                    tokens = tokens.saturating_add(info.last_token_usage.total_tokens.max(0));
-                    let now = Instant::now();
-                    let should_report =
-                        match (last_reported_tokens, last_reported_at.elapsed().as_secs()) {
-                            (Some(prev), secs) => {
-                                tokens > prev && (tokens - prev >= 250 || secs >= 2)
-                            }
-                            (None, _) => tokens > 0,
-                        };
-                    if should_report {
-                        session
-                            .send_event(
-                                turn.as_ref(),
-                                EventMsg::SubAgentToolCallTokens(SubAgentToolCallTokensEvent {
-                                    call_id: call_id.clone(),
-                                    tokens,
-                                }),
-                            )
-                            .await;
-                        last_reported_tokens = Some(tokens);
-                        last_reported_at = now;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let response = last_agent_message.unwrap_or_default().trim().to_string();
-        let tokens = if tokens > 0 { Some(tokens) } else { None };
-        let result = Ok(response.clone());
-        session
-            .send_event(
-                turn.as_ref(),
-                EventMsg::SubAgentToolCallEnd(SubAgentToolCallEndEvent {
-                    call_id,
-                    invocation,
-                    duration: started_at.elapsed(),
-                    tokens,
-                    result: result.clone(),
-                }),
-            )
-            .await;
+        .map_err(FunctionCallError::RespondToModel)?;
 
         Ok(ToolOutput::Function {
             content: json!({
@@ -284,55 +161,6 @@ impl ToolHandler for SpawnSubagentHandler {
             content_items: None,
             success: Some(true),
         })
-    }
-}
-
-fn fmt_exec_activity_command(command: &[String]) -> String {
-    if command.is_empty() {
-        return "shell".to_string();
-    }
-
-    let cmd = if let Some((_shell, script)) = crate::parse_command::extract_shell_command(command) {
-        let script = script.trim();
-        if script.is_empty() {
-            "shell".to_string()
-        } else {
-            script
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    } else {
-        crate::parse_command::shlex_join(command)
-    };
-
-    if cmd.is_empty() {
-        "shell".to_string()
-    } else {
-        cmd
-    }
-}
-
-fn activity_for_event(msg: &EventMsg) -> Option<String> {
-    match msg {
-        EventMsg::TaskStarted(_) => Some("starting".to_string()),
-        EventMsg::UserMessage(_) => Some("sending prompt".to_string()),
-        EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningDelta(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::AgentReasoningRawContentDelta(_)
-        | EventMsg::AgentReasoningSectionBreak(_) => Some("thinking".to_string()),
-        EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => Some("writing".to_string()),
-        EventMsg::ExecCommandBegin(ev) => Some(fmt_exec_activity_command(&ev.command)),
-        EventMsg::McpToolCallBegin(ev) => Some(format!(
-            "mcp {}/{}",
-            ev.invocation.server.trim(),
-            ev.invocation.tool.trim()
-        )),
-        EventMsg::WebSearchBegin(_) => Some("web_search".to_string()),
-        _ => None,
     }
 }
 
@@ -371,22 +199,6 @@ fn normalize_description(description: &str) -> String {
         .join(" ")
         .trim()
         .to_string()
-}
-
-struct CancelOnDrop {
-    token: CancellationToken,
-}
-
-impl CancelOnDrop {
-    fn new(token: CancellationToken) -> Self {
-        Self { token }
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.token.cancel();
-    }
 }
 
 #[cfg(test)]

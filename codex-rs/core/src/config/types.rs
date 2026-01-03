@@ -17,6 +17,141 @@ use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LspServerConfigToml {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LspConfigToml {
+    /// Whether to include a diagnostics summary in the model prompt each turn.
+    #[serde(default = "default_lsp_prompt_diagnostics")]
+    pub prompt_diagnostics: bool,
+
+    /// Maximum number of diagnostics to include in the prompt summary.
+    #[serde(default = "default_lsp_max_prompt_diagnostics")]
+    pub max_prompt_diagnostics: usize,
+
+    /// Maximum number of diagnostics returned by `lsp_diagnostics` by default.
+    #[serde(default = "default_lsp_max_tool_diagnostics")]
+    pub max_tool_diagnostics: usize,
+
+    /// How long `lsp_diagnostics` should wait (in ms) for the first diagnostics update when the
+    /// language server is still warming up. Set to `0` to disable waiting.
+    #[serde(default = "default_lsp_tool_diagnostics_wait_ms")]
+    pub tool_diagnostics_wait_ms: usize,
+
+    /// Max file size in bytes to send to the language server.
+    #[serde(default = "default_lsp_max_file_bytes")]
+    pub max_file_bytes: usize,
+
+    /// Globs to ignore when watching files for updates (wildmatch syntax).
+    #[serde(default)]
+    pub ignored_globs: Vec<String>,
+
+    /// Optional per-language server overrides keyed by LSP language id (e.g. "rust", "go").
+    #[serde(default)]
+    pub servers: HashMap<String, LspServerConfigToml>,
+}
+
+impl Default for LspConfigToml {
+    fn default() -> Self {
+        Self {
+            prompt_diagnostics: default_lsp_prompt_diagnostics(),
+            max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
+            max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            tool_diagnostics_wait_ms: default_lsp_tool_diagnostics_wait_ms(),
+            max_file_bytes: default_lsp_max_file_bytes(),
+            ignored_globs: Vec::new(),
+            servers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspConfig {
+    pub prompt_diagnostics: bool,
+    pub max_prompt_diagnostics: usize,
+    pub max_tool_diagnostics: usize,
+    pub tool_diagnostics_wait_ms: usize,
+    pub manager: codex_lsp::LspManagerConfig,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        let manager = codex_lsp::LspManagerConfig {
+            // Manager defaults enabled=false; we gate enablement via `[features].lsp`.
+            enabled: false,
+            ..Default::default()
+        };
+        Self {
+            prompt_diagnostics: default_lsp_prompt_diagnostics(),
+            max_prompt_diagnostics: default_lsp_max_prompt_diagnostics(),
+            max_tool_diagnostics: default_lsp_max_tool_diagnostics(),
+            tool_diagnostics_wait_ms: default_lsp_tool_diagnostics_wait_ms(),
+            manager,
+        }
+    }
+}
+
+impl From<LspConfigToml> for LspConfig {
+    fn from(toml: LspConfigToml) -> Self {
+        let mut manager = codex_lsp::LspManagerConfig {
+            enabled: false,
+            max_file_bytes: toml.max_file_bytes,
+            ..Default::default()
+        };
+        if !toml.ignored_globs.is_empty() {
+            manager.ignored_globs = toml.ignored_globs.clone();
+        }
+        manager.servers = toml
+            .servers
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    codex_lsp::ServerConfig {
+                        command: v.command,
+                        args: v.args,
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            prompt_diagnostics: toml.prompt_diagnostics,
+            max_prompt_diagnostics: toml.max_prompt_diagnostics,
+            max_tool_diagnostics: toml.max_tool_diagnostics,
+            tool_diagnostics_wait_ms: toml.tool_diagnostics_wait_ms,
+            manager,
+        }
+    }
+}
+
+fn default_lsp_prompt_diagnostics() -> bool {
+    true
+}
+
+fn default_lsp_max_prompt_diagnostics() -> usize {
+    10
+}
+
+fn default_lsp_max_tool_diagnostics() -> usize {
+    200
+}
+
+fn default_lsp_tool_diagnostics_wait_ms() -> usize {
+    2000
+}
+
+fn default_lsp_max_file_bytes() -> usize {
+    512 * 1024
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
     #[serde(flatten)]
@@ -221,7 +356,7 @@ mod option_duration_secs {
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
 pub enum UriBasedFileOpener {
     #[serde(rename = "vscode")]
     VsCode,
@@ -253,7 +388,7 @@ impl UriBasedFileOpener {
 }
 
 /// Settings that govern if and what will be written to `~/.codexel/history.jsonl`.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct History {
     /// If true, history entries will not be written to disk.
     pub persistence: HistoryPersistence,
@@ -263,7 +398,7 @@ pub struct History {
     pub max_bytes: Option<usize>,
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HistoryPersistence {
     /// Save all history entries to disk.
@@ -275,7 +410,7 @@ pub enum HistoryPersistence {
 
 // ===== OTEL configuration =====
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OtelHttpProtocol {
     /// Binary payload
@@ -284,7 +419,7 @@ pub enum OtelHttpProtocol {
     Json,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct OtelTlsConfig {
     pub ca_certificate: Option<AbsolutePathBuf>,
@@ -293,7 +428,7 @@ pub struct OtelTlsConfig {
 }
 
 /// Which OTEL exporter to use.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OtelExporterKind {
     None,
@@ -315,7 +450,7 @@ pub enum OtelExporterKind {
 }
 
 /// OTEL settings loaded from config.toml. Fields are optional so we can apply defaults.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct OtelConfigToml {
     /// Log user prompt in traces
     pub log_user_prompt: Option<bool>,
@@ -350,7 +485,7 @@ impl Default for OtelConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum Notifications {
     Enabled(bool),
@@ -363,8 +498,26 @@ impl Default for Notifications {
     }
 }
 
+/// How TUI2 should interpret mouse scroll events.
+///
+/// Terminals generally encode both mouse wheels and trackpads as the same "scroll up/down" mouse
+/// button events, without a magnitude. This setting controls whether Codex uses a heuristic to
+/// infer wheel vs trackpad per stream, or forces a specific behavior.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum ScrollInputMode {
+    /// Infer wheel vs trackpad behavior per scroll stream.
+    #[default]
+    Auto,
+    /// Always treat scroll events as mouse-wheel input (fixed lines per tick).
+    Wheel,
+    /// Always treat scroll events as trackpad input (fractional accumulation).
+    Trackpad,
+}
+
 /// Collection of settings that are specific to the TUI.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Tui {
     /// Enable desktop notifications from the TUI when the terminal is unfocused.
     /// Defaults to `true`.
@@ -380,6 +533,109 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
+
+    /// Override the *wheel* event density used to normalize TUI2 scrolling.
+    ///
+    /// Terminals generally deliver both mouse wheels and trackpads as discrete `scroll up/down`
+    /// mouse events with direction but no magnitude. Unfortunately, the *number* of raw events
+    /// per physical wheel notch varies by terminal (commonly 1, 3, or 9+). TUI2 uses this value
+    /// to normalize that raw event density into consistent "wheel tick" behavior.
+    ///
+    /// Wheel math (conceptually):
+    ///
+    /// - A single event contributes `1 / scroll_events_per_tick` tick-equivalents.
+    /// - Wheel-like streams then scale that by `scroll_wheel_lines` so one physical notch scrolls
+    ///   a fixed number of lines.
+    ///
+    /// Trackpad math is intentionally *not* fully tied to this value: in trackpad-like mode, TUI2
+    /// uses `min(scroll_events_per_tick, 3)` as the divisor so terminals with dense wheel ticks
+    /// (e.g. 9 events per notch) do not make trackpads feel artificially slow.
+    ///
+    /// Defaults are derived per terminal from [`crate::terminal::TerminalInfo`] when TUI2 starts.
+    /// See `codex-rs/tui2/docs/scroll_input_model.md` for the probe data and rationale.
+    pub scroll_events_per_tick: Option<u16>,
+
+    /// Override how many transcript lines one physical *wheel notch* should scroll in TUI2.
+    ///
+    /// This is the "classic feel" knob. Defaults to 3.
+    ///
+    /// Wheel-like per-event contribution is `scroll_wheel_lines / scroll_events_per_tick`. For
+    /// example, in a terminal that emits 9 events per notch, the default `3 / 9` yields 1/3 of a
+    /// line per event and totals 3 lines once the full notch burst arrives.
+    ///
+    /// See `codex-rs/tui2/docs/scroll_input_model.md` for details on the stream model and the
+    /// wheel/trackpad heuristic.
+    pub scroll_wheel_lines: Option<u16>,
+
+    /// Override baseline trackpad scroll sensitivity in TUI2.
+    ///
+    /// Trackpads do not have discrete notches, but terminals still emit discrete `scroll up/down`
+    /// events. In trackpad-like mode, TUI2 accumulates fractional scroll and only applies whole
+    /// lines to the viewport.
+    ///
+    /// Trackpad per-event contribution is:
+    ///
+    /// - `scroll_trackpad_lines / min(scroll_events_per_tick, 3)`
+    ///
+    /// (plus optional bounded acceleration; see `scroll_trackpad_accel_*`). The `min(..., 3)`
+    /// divisor is deliberate: `scroll_events_per_tick` is calibrated from *wheel* behavior and
+    /// can be much larger than trackpad event density, which would otherwise make trackpads feel
+    /// too slow in dense-wheel terminals.
+    ///
+    /// Defaults to 1, meaning one tick-equivalent maps to one transcript line.
+    pub scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
+    ///
+    /// This keeps small swipes precise while allowing large/faster swipes to cover more content.
+    /// Defaults are chosen to address terminals where trackpad event density is comparatively low.
+    ///
+    /// Concretely, TUI2 computes an acceleration multiplier for trackpad-like streams:
+    ///
+    /// - `multiplier = clamp(1 + abs(events) / scroll_trackpad_accel_events, 1..scroll_trackpad_accel_max)`
+    ///
+    /// The multiplier is applied to the stream’s computed line delta (including any carried
+    /// fractional remainder).
+    pub scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams.
+    ///
+    /// Set to 1 to effectively disable trackpad acceleration.
+    ///
+    /// See [`Tui::scroll_trackpad_accel_events`] for the exact multiplier formula.
+    pub scroll_trackpad_accel_max: Option<u16>,
+
+    /// Select how TUI2 interprets mouse scroll input.
+    ///
+    /// - `auto` (default): infer wheel vs trackpad per scroll stream.
+    /// - `wheel`: always use wheel behavior (fixed lines per wheel notch).
+    /// - `trackpad`: always use trackpad behavior (fractional accumulation; wheel may feel slow).
+    #[serde(default)]
+    pub scroll_mode: ScrollInputMode,
+
+    /// Auto-mode threshold: maximum time (ms) for the first tick-worth of events to arrive.
+    ///
+    /// In `scroll_mode = "auto"`, TUI2 starts a stream as trackpad-like (to avoid overshoot) and
+    /// promotes it to wheel-like if `scroll_events_per_tick` events arrive "quickly enough". This
+    /// threshold controls what "quickly enough" means.
+    ///
+    /// Most users should leave this unset; it is primarily for terminals that emit wheel ticks
+    /// batched over longer time spans.
+    pub scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Auto-mode fallback: maximum duration (ms) that a very small stream is still treated as wheel-like.
+    ///
+    /// This is only used when `scroll_events_per_tick` is effectively 1 (one event per wheel
+    /// notch). In that case, we cannot observe a "tick completion time", so TUI2 treats a
+    /// short-lived, small stream (<= 2 events) as wheel-like to preserve classic wheel behavior.
+    pub scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction in TUI2.
+    ///
+    /// This flips the scroll sign after terminal detection. It is applied consistently to both
+    /// wheel and trackpad input.
+    #[serde(default)]
+    pub scroll_invert: bool,
 }
 
 const fn default_true() -> bool {
@@ -389,7 +645,7 @@ const fn default_true() -> bool {
 /// Settings for notices we display to users via the tui and app-server clients
 /// (primarily the Codex IDE extension). NOTE: these are different from
 /// notifications - notices are warnings, NUX screens, acknowledgements, etc.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Notice {
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
@@ -412,7 +668,7 @@ impl Notice {
     pub(crate) const TABLE_KEY: &'static str = "notice";
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SandboxWorkspaceWrite {
     #[serde(default)]
     pub writable_roots: Vec<AbsolutePathBuf>,
@@ -435,7 +691,7 @@ impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings 
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellEnvironmentPolicyInherit {
     /// "Core" environment variables for the platform. On UNIX, this would
@@ -452,7 +708,7 @@ pub enum ShellEnvironmentPolicyInherit {
 
 /// Policy for building the `env` when spawning a process via either the
 /// `shell` or `local_shell` tool.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ShellEnvironmentPolicyToml {
     pub inherit: Option<ShellEnvironmentPolicyInherit>,
 

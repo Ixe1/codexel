@@ -55,6 +55,15 @@ use codex_app_server_protocol::LoginChatGptCompleteNotification;
 use codex_app_server_protocol::LoginChatGptResponse;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::LogoutChatGptResponse;
+use codex_app_server_protocol::LspDefinitionParams;
+use codex_app_server_protocol::LspDefinitionResponse;
+use codex_app_server_protocol::LspDiagnosticsGetParams;
+use codex_app_server_protocol::LspDiagnosticsGetResponse;
+use codex_app_server_protocol::LspDiagnosticsUpdatedNotification;
+use codex_app_server_protocol::LspDocumentSymbolsParams;
+use codex_app_server_protocol::LspDocumentSymbolsResponse;
+use codex_app_server_protocol::LspReferencesParams;
+use codex_app_server_protocol::LspReferencesResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
@@ -223,6 +232,8 @@ pub(crate) struct CodexMessageProcessor {
     turn_summary_store: TurnSummaryStore,
     pending_fuzzy_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     feedback: CodexFeedback,
+    lsp_manager: codex_lsp::LspManager,
+    lsp_subscribed_roots: HashSet<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -265,6 +276,7 @@ impl CodexMessageProcessor {
         cli_overrides: Vec<(String, TomlValue)>,
         feedback: CodexFeedback,
     ) -> Self {
+        let lsp_manager = conversation_manager.lsp_manager();
         Self {
             auth_manager,
             conversation_manager,
@@ -278,6 +290,8 @@ impl CodexMessageProcessor {
             turn_summary_store: Arc::new(Mutex::new(HashMap::new())),
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
             feedback,
+            lsp_manager,
+            lsp_subscribed_roots: HashSet::new(),
         }
     }
 
@@ -491,6 +505,18 @@ impl CodexMessageProcessor {
             }
             ClientRequest::FuzzyFileSearch { request_id, params } => {
                 self.fuzzy_file_search(request_id, params).await;
+            }
+            ClientRequest::LspDiagnosticsGet { request_id, params } => {
+                self.lsp_diagnostics_get(request_id, params).await;
+            }
+            ClientRequest::LspDefinition { request_id, params } => {
+                self.lsp_definition(request_id, params).await;
+            }
+            ClientRequest::LspReferences { request_id, params } => {
+                self.lsp_references(request_id, params).await;
+            }
+            ClientRequest::LspDocumentSymbols { request_id, params } => {
+                self.lsp_document_symbols(request_id, params).await;
             }
             ClientRequest::OneOffCommandExec { request_id, params } => {
                 self.exec_one_off_command(request_id, params).await;
@@ -1992,16 +2018,6 @@ impl CodexMessageProcessor {
             }
         };
 
-        if !config.features.enabled(Feature::RmcpClient) {
-            let error = JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: "OAuth login is only supported when [features].rmcp_client is true in config.toml".to_string(),
-                data: None,
-            };
-            self.outgoing.send_error(request_id, error).await;
-            return;
-        }
-
         let McpServerOauthLoginParams {
             name,
             scopes,
@@ -2742,8 +2758,14 @@ impl CodexMessageProcessor {
                     sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
                     model: params.model,
                     plan_model: None,
+                    explore_model: None,
+                    mini_subagent_model: None,
+                    subagent_model: None,
                     effort: params.effort.map(Some),
                     plan_effort: None,
+                    explore_effort: None,
+                    mini_subagent_effort: None,
+                    subagent_effort: None,
                     summary: params.summary,
                 })
                 .await;
@@ -3322,6 +3344,356 @@ impl CodexMessageProcessor {
             Ok(conv) => Some(conv.rollout_path()),
             Err(_) => None,
         }
+    }
+
+    async fn lsp_diagnostics_get(
+        &mut self,
+        request_id: RequestId,
+        params: LspDiagnosticsGetParams,
+    ) {
+        let config = match self.load_latest_config().await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mut lsp_config = config.lsp.manager.clone();
+        lsp_config.enabled = config.features.enabled(Feature::Lsp);
+        self.lsp_manager.set_config(lsp_config).await;
+
+        if !config.features.enabled(Feature::Lsp) {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "LSP is disabled. Enable `[features].lsp = true` in config.toml."
+                    .to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let root = resolve_root(&config.cwd, params.root);
+        self.ensure_lsp_diagnostics_subscription(&root).await;
+        let path = params.path.map(|p| resolve_under_root(&root, p));
+        let max_results = params.max_results.unwrap_or(200);
+
+        let diags = match self
+            .lsp_manager
+            .diagnostics(&root, path.as_deref(), max_results)
+            .await
+        {
+            Ok(diags) => diags,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("LSP diagnostics failed: {err:#}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let response = LspDiagnosticsGetResponse {
+            diagnostics: diags.into_iter().map(to_api_diagnostic).collect(),
+        };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn lsp_definition(&mut self, request_id: RequestId, params: LspDefinitionParams) {
+        let config = match self.load_latest_config().await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mut lsp_config = config.lsp.manager.clone();
+        lsp_config.enabled = config.features.enabled(Feature::Lsp);
+        self.lsp_manager.set_config(lsp_config).await;
+
+        if !config.features.enabled(Feature::Lsp) {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "LSP is disabled. Enable `[features].lsp = true` in config.toml."
+                    .to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let root = resolve_root(&config.cwd, params.root);
+        self.ensure_lsp_diagnostics_subscription(&root).await;
+        let path = resolve_under_root(&root, params.file_path);
+        let locations = match self
+            .lsp_manager
+            .definition(
+                &root,
+                &path,
+                codex_lsp::Position {
+                    line: params.position.line,
+                    character: params.position.character,
+                },
+            )
+            .await
+        {
+            Ok(locations) => locations,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("LSP definition failed: {err:#}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let response = LspDefinitionResponse {
+            locations: locations.into_iter().map(to_api_location).collect(),
+        };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn lsp_references(&mut self, request_id: RequestId, params: LspReferencesParams) {
+        let config = match self.load_latest_config().await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mut lsp_config = config.lsp.manager.clone();
+        lsp_config.enabled = config.features.enabled(Feature::Lsp);
+        self.lsp_manager.set_config(lsp_config).await;
+
+        if !config.features.enabled(Feature::Lsp) {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "LSP is disabled. Enable `[features].lsp = true` in config.toml."
+                    .to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let root = resolve_root(&config.cwd, params.root);
+        self.ensure_lsp_diagnostics_subscription(&root).await;
+        let path = resolve_under_root(&root, params.file_path);
+        let locations = match self
+            .lsp_manager
+            .references(
+                &root,
+                &path,
+                codex_lsp::Position {
+                    line: params.position.line,
+                    character: params.position.character,
+                },
+                params.include_declaration,
+            )
+            .await
+        {
+            Ok(locations) => locations,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("LSP references failed: {err:#}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let response = LspReferencesResponse {
+            locations: locations.into_iter().map(to_api_location).collect(),
+        };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn lsp_document_symbols(
+        &mut self,
+        request_id: RequestId,
+        params: LspDocumentSymbolsParams,
+    ) {
+        let config = match self.load_latest_config().await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mut lsp_config = config.lsp.manager.clone();
+        lsp_config.enabled = config.features.enabled(Feature::Lsp);
+        self.lsp_manager.set_config(lsp_config).await;
+
+        if !config.features.enabled(Feature::Lsp) {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "LSP is disabled. Enable `[features].lsp = true` in config.toml."
+                    .to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let root = resolve_root(&config.cwd, params.root);
+        self.ensure_lsp_diagnostics_subscription(&root).await;
+        let path = resolve_under_root(&root, params.file_path);
+        let symbols = match self.lsp_manager.document_symbols(&root, &path).await {
+            Ok(symbols) => symbols,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("LSP document symbols failed: {err:#}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let response = LspDocumentSymbolsResponse {
+            symbols: symbols.into_iter().map(to_api_symbol).collect(),
+        };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn ensure_lsp_diagnostics_subscription(&mut self, root: &PathBuf) {
+        if self.lsp_subscribed_roots.contains(root) {
+            return;
+        }
+        self.lsp_subscribed_roots.insert(root.clone());
+
+        let mut rx = match self.lsp_manager.subscribe_diagnostics(root).await {
+            Ok(rx) => rx,
+            Err(err) => {
+                tracing::warn!("failed to subscribe to LSP diagnostics: {err:#}");
+                return;
+            }
+        };
+        let outgoing = Arc::clone(&self.outgoing);
+        let root = root.clone();
+        tokio::spawn(async move {
+            loop {
+                let update = match rx.recv().await {
+                    Ok(update) => update,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                let mut errors = 0usize;
+                let mut warnings = 0usize;
+                let mut infos = 0usize;
+                let mut hints = 0usize;
+                for d in &update.diagnostics {
+                    match d.severity {
+                        Some(codex_lsp::DiagnosticSeverity::Error) => errors += 1,
+                        Some(codex_lsp::DiagnosticSeverity::Warning) => warnings += 1,
+                        Some(codex_lsp::DiagnosticSeverity::Information) => infos += 1,
+                        Some(codex_lsp::DiagnosticSeverity::Hint) => hints += 1,
+                        None => {}
+                    }
+                }
+
+                let notification =
+                    ServerNotification::LspDiagnosticsUpdated(LspDiagnosticsUpdatedNotification {
+                        root: root.clone(),
+                        path: PathBuf::from(&update.path),
+                        errors,
+                        warnings,
+                        infos,
+                        hints,
+                    });
+                outgoing.send_server_notification(notification).await;
+            }
+        });
+    }
+}
+
+fn resolve_root(base: &Path, root: PathBuf) -> PathBuf {
+    if root.is_absolute() {
+        root
+    } else {
+        base.join(root)
+    }
+}
+
+fn resolve_under_root(root: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
+}
+
+fn to_api_severity(
+    severity: Option<codex_lsp::DiagnosticSeverity>,
+) -> Option<codex_app_server_protocol::LspDiagnosticSeverity> {
+    severity.map(|sev| match sev {
+        codex_lsp::DiagnosticSeverity::Error => {
+            codex_app_server_protocol::LspDiagnosticSeverity::Error
+        }
+        codex_lsp::DiagnosticSeverity::Warning => {
+            codex_app_server_protocol::LspDiagnosticSeverity::Warning
+        }
+        codex_lsp::DiagnosticSeverity::Information => {
+            codex_app_server_protocol::LspDiagnosticSeverity::Information
+        }
+        codex_lsp::DiagnosticSeverity::Hint => {
+            codex_app_server_protocol::LspDiagnosticSeverity::Hint
+        }
+    })
+}
+
+fn to_api_position(pos: codex_lsp::Position) -> codex_app_server_protocol::LspPosition {
+    codex_app_server_protocol::LspPosition {
+        line: pos.line,
+        character: pos.character,
+    }
+}
+
+fn to_api_range(range: codex_lsp::Range) -> codex_app_server_protocol::LspRange {
+    codex_app_server_protocol::LspRange {
+        start: to_api_position(range.start),
+        end: to_api_position(range.end),
+    }
+}
+
+fn to_api_diagnostic(diag: codex_lsp::Diagnostic) -> codex_app_server_protocol::LspDiagnostic {
+    codex_app_server_protocol::LspDiagnostic {
+        path: PathBuf::from(diag.path),
+        range: to_api_range(diag.range),
+        severity: to_api_severity(diag.severity),
+        code: diag.code,
+        source: diag.source,
+        message: diag.message,
+    }
+}
+
+fn to_api_location(loc: codex_lsp::Location) -> codex_app_server_protocol::LspLocation {
+    codex_app_server_protocol::LspLocation {
+        path: PathBuf::from(loc.path),
+        range: to_api_range(loc.range),
+    }
+}
+
+fn to_api_symbol(
+    symbol: codex_lsp::DocumentSymbol,
+) -> codex_app_server_protocol::LspDocumentSymbol {
+    codex_app_server_protocol::LspDocumentSymbol {
+        name: symbol.name,
+        kind: symbol.kind,
+        range: to_api_range(symbol.range),
+        selection_range: to_api_range(symbol.selection_range),
+        children: symbol.children.into_iter().map(to_api_symbol).collect(),
     }
 }
 

@@ -3,9 +3,12 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ApprovalRequest;
 use crate::chatwidget::ChatWidget;
+use crate::chatwidget::ExternalEditorState;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::external_editor;
 use crate::file_search::FileSearchManager;
+use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
@@ -61,6 +64,8 @@ use tokio::sync::mpsc::unbounded_channel;
 
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
+
+const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -414,6 +419,7 @@ impl App {
                 };
                 ChatWidget::new_from_existing(
                     init,
+                    conversation_manager.clone(),
                     resumed.conversation,
                     resumed.session_configured,
                 )
@@ -542,6 +548,11 @@ impl App {
                             }
                         },
                     )?;
+                    if self.chat_widget.external_editor_state() == ExternalEditorState::Requested {
+                        self.chat_widget
+                            .set_external_editor_state(ExternalEditorState::Active);
+                        self.app_event_tx.send(AppEvent::LaunchExternalEditor);
+                    }
                 }
             }
         }
@@ -626,6 +637,7 @@ impl App {
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
+                                    self.server.clone(),
                                     resumed.conversation,
                                     resumed.session_configured,
                                 );
@@ -726,6 +738,7 @@ impl App {
                 return Ok(false);
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
+            AppEvent::QueueUserText(text) => self.chat_widget.queue_user_text(text),
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();
@@ -740,6 +753,15 @@ impl App {
                     pager_lines,
                     "D I F F".to_string(),
                 ));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::LspStatusLoaded(status) => {
+                self.chat_widget
+                    .add_plain_history_lines(crate::lsp_status::render(&status));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::LspStatusLoadFailed(message) => {
+                self.chat_widget.add_error_message(message);
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::StartFileSearch(query) => {
@@ -773,6 +795,14 @@ impl App {
                 self.config.plan_model_reasoning_effort = effort;
                 self.chat_widget.set_plan_reasoning_effort(effort);
             }
+            AppEvent::UpdateSubagentModel(model) => {
+                self.config.subagent_model = Some(model.clone());
+                self.chat_widget.set_subagent_model(&model);
+            }
+            AppEvent::UpdateSubagentReasoningEffort(effort) => {
+                self.config.subagent_model_reasoning_effort = effort;
+                self.chat_widget.set_subagent_reasoning_effort(effort);
+            }
             AppEvent::OpenReasoningPopup { model, target } => {
                 self.chat_widget.open_reasoning_popup(target, model);
             }
@@ -803,6 +833,11 @@ impl App {
             }
             AppEvent::OpenFeedbackConsent { category } => {
                 self.chat_widget.open_feedback_consent(category);
+            }
+            AppEvent::LaunchExternalEditor => {
+                if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
+                    self.launch_external_editor(tui).await;
+                }
             }
             AppEvent::OpenWindowsSandboxEnablePrompt { preset } => {
                 self.chat_widget.open_windows_sandbox_enable_prompt(preset);
@@ -840,8 +875,14 @@ impl App {
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         model: None,
                                         plan_model: None,
+                                        explore_model: None,
+                                        mini_subagent_model: None,
+                                        subagent_model: None,
                                         effort: None,
                                         plan_effort: None,
+                                        explore_effort: None,
+                                        mini_subagent_effort: None,
+                                        subagent_effort: None,
                                         summary: None,
                                     },
                                 ));
@@ -942,6 +983,45 @@ impl App {
                         } else {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to save default plan model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistSubagentModelSelection { model, effort } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_subagent_model(Some(model.as_str()), effort)
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        let mut message = format!("Subagent model changed to {model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                            message.push(' ');
+                            message.push_str(label);
+                        }
+                        message.push_str(" (used for spawned subagents)");
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist subagent model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save subagent model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default subagent model: {err}"
                             ));
                         }
                     }
@@ -1197,6 +1277,68 @@ impl App {
         self.config.model_reasoning_effort = effort;
     }
 
+    async fn launch_external_editor(&mut self, tui: &mut tui::Tui) {
+        let editor_cmd = match external_editor::resolve_editor_command() {
+            Ok(cmd) => cmd,
+            Err(external_editor::EditorError::MissingEditor) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(
+                        "Cannot open external editor: set $VISUAL or $EDITOR".to_string(),
+                    ));
+                self.reset_external_editor_state(tui);
+                return;
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(format!(
+                        "Failed to open editor: {err}",
+                    )));
+                self.reset_external_editor_state(tui);
+                return;
+            }
+        };
+
+        let seed = self.chat_widget.composer_text_with_pending();
+        let editor_result = tui
+            .with_restored(tui::RestoreMode::KeepRaw, || async {
+                external_editor::run_editor(&seed, &editor_cmd).await
+            })
+            .await;
+        self.reset_external_editor_state(tui);
+
+        match editor_result {
+            Ok(new_text) => {
+                // Trim trailing whitespace
+                let cleaned = new_text.trim_end().to_string();
+                self.chat_widget.apply_external_edit(cleaned);
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(format!(
+                        "Failed to open editor: {err}",
+                    )));
+            }
+        }
+        tui.frame_requester().schedule_frame();
+    }
+
+    fn request_external_editor_launch(&mut self, tui: &mut tui::Tui) {
+        self.chat_widget
+            .set_external_editor_state(ExternalEditorState::Requested);
+        self.chat_widget.set_footer_hint_override(Some(vec![(
+            EXTERNAL_EDITOR_HINT.to_string(),
+            String::new(),
+        )]));
+        tui.frame_requester().schedule_frame();
+    }
+
+    fn reset_external_editor_state(&mut self, tui: &mut tui::Tui) {
+        self.chat_widget
+            .set_external_editor_state(ExternalEditorState::Closed);
+        self.chat_widget.set_footer_hint_override(None);
+        tui.frame_requester().schedule_frame();
+    }
+
     async fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
         match key_event {
             KeyEvent {
@@ -1209,6 +1351,21 @@ impl App {
                 let _ = tui.enter_alt_screen();
                 self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
                 tui.frame_requester().schedule_frame();
+            }
+            KeyEvent {
+                code: KeyCode::Char('g'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                // Only launch the external editor if there is no overlay and the bottom pane is not in use.
+                // Note that it can be launched while a task is running to enable editing while the previous turn is ongoing.
+                if self.overlay.is_none()
+                    && self.chat_widget.can_launch_external_editor()
+                    && self.chat_widget.external_editor_state() == ExternalEditorState::Closed
+                {
+                    self.request_external_editor_launch(tui);
+                }
             }
             // Esc primes/advances backtracking only in normal (not working) mode
             // with the composer focused and empty. In any other state, forward

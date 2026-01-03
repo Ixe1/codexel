@@ -65,6 +65,15 @@ def group_for_subject(subject):
         return "Chores"
     return "Other"
 
+def escape_markdown_inline_text(line: str) -> str:
+    # Make identifier-like tokens stable under Markdown + Prettier by rendering them as inline code.
+    # This avoids Prettier rewriting things like "mini_subagent_*" into emphasis.
+    parts = line.split("`")
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+_\*", r"`\g<0>`", parts[i])
+        parts[i] = re.sub(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b", r"`\g<0>`", parts[i])
+    return "`".join(parts)
+
 def git_lines(args):
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
@@ -108,7 +117,7 @@ def render_details(range_):
         body = commit_body(sha)
         if not body.strip():
             continue
-        lines = body.split("\n")
+        lines = [escape_markdown_inline_text(l) for l in body.split("\n")]
         subject = lines[0].strip()
         if not subject:
             continue
@@ -122,6 +131,7 @@ def render_details(range_):
         if not commits:
             continue
         out.append(f"#### {group}")
+        out.append("")
         out.extend(commits)
         out.append("")
 
@@ -133,7 +143,7 @@ def render(match):
     if not details:
         details = "_No fork-only changes yet._"
     details = details.replace("\n", newline)
-    return f"<!-- BEGIN GENERATED DETAILS: range={range_} -->{newline}{details}{newline}<!-- END GENERATED DETAILS -->"
+    return f"<!-- BEGIN GENERATED DETAILS: range={range_} -->{newline}{newline}{details}{newline}<!-- END GENERATED DETAILS -->"
 
 updated = pattern.sub(render, text)
 if updated == text:

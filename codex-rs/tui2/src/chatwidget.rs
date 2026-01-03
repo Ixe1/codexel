@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,6 +11,8 @@ use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
+use codex_core::features::FEATURES;
+use codex_core::features::Feature;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::models_manager::manager::ModelsManager;
@@ -50,6 +51,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PlanApprovalRequestEvent;
 use codex_core::protocol::PlanRequest;
 use codex_core::protocol::RateLimitSnapshot;
+use codex_core::protocol::RawResponseItemEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::SkillsListEntry;
@@ -75,6 +77,7 @@ use codex_core::skills::model::SkillMetadata;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::user_input::UserInput;
 use crossterm::event::KeyCode;
@@ -97,12 +100,15 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::AskUserQuestionOverlay;
+use crate::bottom_pane::BetaFeatureItem;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
+use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::PlanApprovalOverlay;
 use crate::bottom_pane::PlanRequestOverlay;
+use crate::bottom_pane::ResumePromptOverlay;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
@@ -132,6 +138,7 @@ use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
+use self::interrupts::CompletedLspToolCall;
 use self::interrupts::InterruptManager;
 mod agent;
 use self::agent::spawn_agent;
@@ -299,6 +306,7 @@ pub(crate) struct ChatWidget {
     active_cell: Option<Box<dyn HistoryCell>>,
     active_subagent_group: Option<Arc<Mutex<SubAgentToolCallGroupCell>>>,
     config: Config,
+    lsp_manager: codex_lsp::LspManager,
     model_family: ModelFamily,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
@@ -315,6 +323,8 @@ pub(crate) struct ChatWidget {
     stream_controller: Option<StreamController>,
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
+    pending_lsp_tool_calls: HashMap<String, PendingLspToolCall>,
+    pending_apply_patch_calls: HashSet<String>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     task_complete_pending: bool,
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
@@ -328,7 +338,6 @@ pub(crate) struct ChatWidget {
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
-    plan_variants_progress: Option<PlanVariantsProgress>,
     conversation_id: Option<ConversationId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -336,6 +345,10 @@ pub(crate) struct ChatWidget {
     // When resuming an existing session (selected via resume picker), avoid an
     // immediate redraw on SessionConfigured to prevent a gratuitous UI flicker.
     suppress_session_configured_redraw: bool,
+    // Flags captured during replay to decide whether to prompt on resume.
+    resume_last_turn_aborted: bool,
+    resume_had_partial_output: bool,
+    resume_had_in_progress_tools: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
     // Pending notification to show when unfocused on next Draw
@@ -354,130 +367,15 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
 }
 
+struct PendingLspToolCall {
+    tool_name: String,
+    arguments: String,
+    start_time: std::time::Instant,
+}
+
 struct UserMessage {
     text: String,
     image_paths: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProgressStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Clone)]
-struct PlanVariantsProgress {
-    total: usize,
-    steps: Vec<ProgressStatus>,
-    durations: Vec<Option<String>>,
-    last_activity: Vec<Option<String>>,
-    tokens: Vec<Option<String>>,
-}
-
-impl PlanVariantsProgress {
-    fn new(total: usize) -> Self {
-        Self {
-            total,
-            steps: vec![ProgressStatus::Pending; total],
-            durations: vec![None; total],
-            last_activity: vec![None; total],
-            tokens: vec![None; total],
-        }
-    }
-
-    fn variant_label(&self, idx: usize) -> String {
-        if self.total == 3 {
-            match idx {
-                0 => "Minimal".to_string(),
-                1 => "Correctness".to_string(),
-                2 => "DX".to_string(),
-                _ => format!("Variant {}/{}", idx + 1, self.total),
-            }
-        } else {
-            format!("Variant {}/{}", idx + 1, self.total)
-        }
-    }
-
-    fn set_in_progress(&mut self, idx: usize) {
-        if idx < self.steps.len() {
-            self.steps[idx] = ProgressStatus::InProgress;
-        }
-    }
-
-    fn set_completed(&mut self, idx: usize) {
-        if idx < self.steps.len() {
-            self.steps[idx] = ProgressStatus::Completed;
-        }
-    }
-
-    fn set_duration(&mut self, idx: usize, duration: Option<String>) {
-        if idx < self.durations.len() {
-            self.durations[idx] = duration;
-        }
-    }
-
-    fn set_activity(&mut self, idx: usize, activity: Option<String>) {
-        if idx < self.last_activity.len() {
-            self.last_activity[idx] = activity;
-        }
-    }
-
-    fn set_tokens(&mut self, idx: usize, tokens: Option<String>) {
-        if idx < self.tokens.len() {
-            self.tokens[idx] = tokens;
-        }
-    }
-
-    fn render_detail_lines(&self) -> Vec<ratatui::text::Line<'static>> {
-        use ratatui::style::Stylize;
-        let mut lines = Vec::with_capacity(self.total);
-        for (idx, status) in self.steps.iter().copied().enumerate() {
-            let label = self.variant_label(idx);
-            let status_span = match status {
-                ProgressStatus::Pending => "○".dim(),
-                ProgressStatus::InProgress => "●".cyan(),
-                ProgressStatus::Completed => "✓".green(),
-            };
-
-            let mut spans = vec!["  ".into(), status_span, " ".into(), label.into()];
-            let duration = self.durations.get(idx).and_then(|d| d.as_deref());
-            let tokens = self.tokens.get(idx).and_then(|t| t.as_deref());
-            if duration.is_some() || tokens.is_some() {
-                let mut meta = String::new();
-                meta.push('(');
-                if let Some(duration) = duration {
-                    meta.push_str(duration);
-                }
-                if let Some(tokens) = tokens {
-                    if duration.is_some() {
-                        meta.push_str(", ");
-                    }
-                    meta.push_str(tokens);
-                    meta.push_str(" tok");
-                }
-                meta.push(')');
-                spans.push(" ".into());
-                spans.push(meta.dim());
-            }
-            if status == ProgressStatus::Completed {
-                spans.push(" ".into());
-                spans.push("—".dim());
-                spans.push(" ".into());
-                spans.push("done".dim());
-            } else if let Some(activity) = self.last_activity.get(idx).and_then(|a| a.as_deref()) {
-                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
-                if !activity.is_empty() {
-                    spans.push(" ".into());
-                    spans.push("—".dim());
-                    spans.push(" ".into());
-                    spans.push(activity.to_string().dim());
-                }
-            }
-            lines.push(spans.into());
-        }
-        lines
-    }
 }
 
 impl From<String> for UserMessage {
@@ -534,13 +432,18 @@ impl ChatWidget {
         }
     }
 
-    fn set_status_header(&mut self, header: String) {
-        if self.plan_variants_progress.is_some() && header != "Planning plan variants" {
-            self.plan_variants_progress = None;
-            self.clear_status_detail_lines();
-        }
+    /// Update the status indicator header and details.
+    ///
+    /// Passing `None` clears any existing details.
+    fn set_status(&mut self, header: String, details: Option<String>) {
         self.current_status_header = header.clone();
-        self.bottom_pane.update_status_header(header);
+        self.bottom_pane.update_status(header, details);
+    }
+
+    /// Convenience wrapper around [`Self::set_status`];
+    /// updates the status indicator header and clears any existing details.
+    fn set_status_header(&mut self, header: String) {
+        self.set_status(header, None);
     }
 
     fn set_status_detail_lines(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
@@ -552,9 +455,7 @@ impl ChatWidget {
     }
 
     fn restore_retry_status_header_if_present(&mut self) {
-        if let Some(header) = self.retry_status_header.take()
-            && self.current_status_header != header
-        {
+        if let Some(header) = self.retry_status_header.take() {
             self.set_status_header(header);
         }
     }
@@ -566,7 +467,11 @@ impl ChatWidget {
         self.set_skills(None);
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
+        self.resume_last_turn_aborted = false;
+        self.resume_had_partial_output = false;
+        self.resume_had_in_progress_tools = false;
         let initial_messages = event.initial_messages.clone();
+        let is_resume_replay = initial_messages.is_some();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
         self.add_to_history(history_cell::new_session_info(
@@ -577,6 +482,36 @@ impl ChatWidget {
         ));
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
+        }
+        if is_resume_replay {
+            if self.stream_controller.is_some() {
+                self.resume_had_partial_output = true;
+                self.flush_answer_stream_with_separator();
+            }
+
+            self.flush_completed_active_cell_if_needed();
+            self.clear_completed_subagent_group_if_needed();
+
+            if self.active_cell_is_in_progress()
+                || !self.running_commands.is_empty()
+                || self.active_subagent_group_is_in_progress()
+            {
+                self.resume_had_in_progress_tools = true;
+                self.finalize_turn();
+            }
+
+            if self.initial_user_message.is_none()
+                && (self.resume_last_turn_aborted
+                    || self.resume_had_partial_output
+                    || self.resume_had_in_progress_tools)
+            {
+                self.bottom_pane
+                    .show_view(Box::new(ResumePromptOverlay::new(
+                        self.app_event_tx.clone(),
+                        self.resume_had_partial_output,
+                        self.resume_had_in_progress_tools,
+                    )));
+            }
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
@@ -634,6 +569,10 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn queue_user_text(&mut self, text: String) {
+        self.queue_user_message(text.into());
+    }
+
     fn on_agent_message(&mut self, message: String) {
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
@@ -665,14 +604,11 @@ impl ChatWidget {
     }
 
     fn on_agent_reasoning_final(&mut self) {
-        let reasoning_summary_format = self.get_model_family().reasoning_summary_format;
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
         if !self.full_reasoning_buffer.is_empty() {
-            let cell = history_cell::new_reasoning_summary_block(
-                self.full_reasoning_buffer.clone(),
-                reasoning_summary_format,
-            );
+            let cell =
+                history_cell::new_reasoning_summary_block(self.full_reasoning_buffer.clone());
             self.add_boxed_history(cell);
         }
         self.reasoning_buffer.clear();
@@ -693,7 +629,6 @@ impl ChatWidget {
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.set_task_running(true);
         self.retry_status_header = None;
-        self.plan_variants_progress = None;
         self.bottom_pane.set_interrupt_hint_visible(true);
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
@@ -704,6 +639,7 @@ impl ChatWidget {
     fn on_task_complete(&mut self, last_agent_message: Option<String>) {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
+        self.flush_completed_active_cell_if_needed();
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
@@ -719,6 +655,15 @@ impl ChatWidget {
         });
 
         self.maybe_show_pending_rate_limit_prompt();
+    }
+
+    fn on_task_complete_replay(&mut self) {
+        self.flush_answer_stream_with_separator();
+        self.flush_completed_active_cell_if_needed();
+        self.bottom_pane.set_task_running(false);
+        self.running_commands.clear();
+        self.suppressed_exec_calls.clear();
+        self.last_unified_wait = None;
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -874,11 +819,11 @@ impl ChatWidget {
         self.bottom_pane.set_task_running(true);
         if let Some(current) = &self.mcp_startup_status {
             let total = current.len();
-            let mut starting: Vec<_> = current
+            let mut starting: Vec<String> = current
                 .iter()
                 .filter_map(|(name, state)| {
                     if matches!(state, McpStartupStatus::Starting) {
-                        Some(name)
+                        Some(name.clone())
                     } else {
                         None
                     }
@@ -905,6 +850,20 @@ impl ChatWidget {
                     format!("Booting MCP server: {first}")
                 };
                 self.set_status_header(header);
+
+                let max_details = 4;
+                let mut detail_lines: Vec<Line<'static>> = starting
+                    .iter()
+                    .take(max_details)
+                    .map(|name| vec!["  └ ".dim(), name.clone().into(), " starting".dim()].into())
+                    .collect();
+                if starting.len() > max_details {
+                    let extra = starting.len().saturating_sub(max_details);
+                    detail_lines.push(vec!["  └ ".dim(), format!("… +{extra} more").dim()].into());
+                }
+                self.set_status_detail_lines(detail_lines);
+            } else {
+                self.clear_status_detail_lines();
             }
         }
         self.request_redraw();
@@ -926,6 +885,7 @@ impl ChatWidget {
             self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
         }
 
+        self.clear_status_detail_lines();
         self.mcp_startup_status = None;
         self.bottom_pane.set_task_running(false);
         self.maybe_send_next_queued_input();
@@ -968,6 +928,19 @@ impl ChatWidget {
         }
 
         self.request_redraw();
+    }
+
+    fn on_interrupted_turn_replay(&mut self, _reason: TurnAbortReason) {
+        self.resume_last_turn_aborted = true;
+        self.resume_had_partial_output =
+            self.resume_had_partial_output || self.stream_controller.is_some();
+        self.resume_had_in_progress_tools = self.resume_had_in_progress_tools
+            || self.active_cell.is_some()
+            || !self.running_commands.is_empty()
+            || self.active_subagent_group.is_some();
+
+        self.flush_answer_stream_with_separator();
+        self.finalize_turn();
     }
 
     fn on_plan_update(&mut self, update: UpdatePlanArgs) {
@@ -1127,6 +1100,101 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_web_search_call(ev.query));
     }
 
+    fn on_raw_response_item(&mut self, ev: RawResponseItemEvent) {
+        match ev.item {
+            ResponseItem::CustomToolCall { name, call_id, .. } => {
+                if name == "apply_patch" {
+                    self.pending_apply_patch_calls.insert(call_id);
+                }
+            }
+            ResponseItem::CustomToolCallOutput { call_id, output } => {
+                if self.pending_apply_patch_calls.remove(&call_id)
+                    && let Some(idx) = output.find("## LSP diagnostics")
+                    && let Some(cell) = history_cell::new_lsp_diagnostics_event(
+                        output[idx..].to_string(),
+                        self.config.cwd.clone(),
+                    )
+                {
+                    self.flush_answer_stream_with_separator();
+                    self.flush_active_cell();
+                    self.add_boxed_history(Box::new(cell));
+                    self.request_redraw();
+                }
+            }
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => {
+                if name == "apply_patch" {
+                    self.pending_apply_patch_calls.insert(call_id);
+                    return;
+                }
+                if !name.starts_with("lsp_") {
+                    return;
+                }
+                self.pending_lsp_tool_calls.insert(
+                    call_id,
+                    PendingLspToolCall {
+                        tool_name: name,
+                        arguments,
+                        start_time: std::time::Instant::now(),
+                    },
+                );
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                if self.pending_apply_patch_calls.remove(&call_id) {
+                    if let Some(idx) = output.content.find("## LSP diagnostics")
+                        && let Some(cell) = history_cell::new_lsp_diagnostics_event(
+                            output.content[idx..].to_string(),
+                            self.config.cwd.clone(),
+                        )
+                    {
+                        self.flush_answer_stream_with_separator();
+                        self.flush_active_cell();
+                        self.add_boxed_history(Box::new(cell));
+                        self.request_redraw();
+                    }
+                    return;
+                }
+                let Some(call) = self.pending_lsp_tool_calls.remove(&call_id) else {
+                    return;
+                };
+                if !call.tool_name.starts_with("lsp_") {
+                    return;
+                }
+
+                let completed = CompletedLspToolCall {
+                    tool_name: call.tool_name,
+                    arguments: call.arguments,
+                    output: output.content,
+                    success: output.success.unwrap_or(true),
+                    duration: Some(call.start_time.elapsed()),
+                };
+                let completed2 = completed.clone();
+                self.defer_or_handle(
+                    |q| q.push_lsp_tool_call(completed),
+                    |s| s.handle_lsp_tool_call_now(completed2),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn handle_lsp_tool_call_now(&mut self, ev: CompletedLspToolCall) {
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.add_boxed_history(Box::new(history_cell::FunctionToolCallCell::new(
+            ev.tool_name,
+            ev.arguments,
+            ev.output,
+            ev.success,
+            ev.duration,
+        )));
+        self.request_redraw();
+    }
+
     fn on_get_history_entry_response(
         &mut self,
         event: codex_core::protocol::GetHistoryEntryResponseEvent,
@@ -1158,119 +1226,8 @@ impl ChatWidget {
         debug!("BackgroundEvent: {message}");
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(true);
-
-        if let Some(progress) = self.maybe_update_plan_variants_progress(message.as_str()) {
-            self.plan_variants_progress = Some(progress);
-            self.set_status_header("Planning plan variants".to_string());
-            self.set_status_detail_lines(
-                self.plan_variants_progress
-                    .as_ref()
-                    .map(PlanVariantsProgress::render_detail_lines)
-                    .unwrap_or_default(),
-            );
-            return;
-        }
-
-        self.plan_variants_progress = None;
         self.clear_status_detail_lines();
         self.set_status_header(message);
-    }
-
-    fn maybe_update_plan_variants_progress(
-        &mut self,
-        message: &str,
-    ) -> Option<PlanVariantsProgress> {
-        let message = message.trim();
-        if message.starts_with("Plan variants:") {
-            // Expected shapes:
-            // - "Plan variants: generating 1/3…"
-            // - "Plan variants: finished 1/3 (12.3s)"
-            let tokens: Vec<&str> = message.split_whitespace().collect();
-            if tokens.len() < 4 {
-                return None;
-            }
-
-            let action = tokens.get(2).copied()?;
-            let fraction = tokens.get(3).copied()?;
-            let fraction = fraction.trim_end_matches('…');
-            let (idx_str, total_str) = fraction.split_once('/')?;
-            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
-            let total = usize::from_str(total_str).ok()?;
-            if total == 0 {
-                return None;
-            }
-
-            let duration = message
-                .find('(')
-                .and_then(|start| message.rfind(')').map(|end| (start, end)))
-                .and_then(|(start, end)| {
-                    if end > start + 1 {
-                        Some(message[start + 1..end].to_string())
-                    } else {
-                        None
-                    }
-                });
-
-            let mut progress = self
-                .plan_variants_progress
-                .clone()
-                .filter(|p| p.total == total)
-                .unwrap_or_else(|| PlanVariantsProgress::new(total));
-
-            match action {
-                "generating" => {
-                    progress.set_in_progress(idx);
-                    progress.set_duration(idx, None);
-                }
-                "finished" => {
-                    progress.set_completed(idx);
-                    progress.set_duration(idx, duration);
-                    progress.set_activity(idx, None);
-                }
-                _ => return None,
-            }
-
-            return Some(progress);
-        }
-
-        if let Some(rest) = message.strip_prefix("Plan variant ") {
-            // Expected shape:
-            // - "Plan variant 2/3: rg -n ..."
-            // - "Plan variant 2/3: shell rg -n ..." (legacy)
-            let (fraction, activity) = rest.split_once(':')?;
-            let fraction = fraction.trim();
-            let (idx_str, total_str) = fraction.split_once('/')?;
-            let idx = usize::from_str(idx_str).ok()?.saturating_sub(1);
-            let total = usize::from_str(total_str).ok()?;
-            if total == 0 {
-                return None;
-            }
-
-            let mut progress = self
-                .plan_variants_progress
-                .clone()
-                .filter(|p| p.total == total)
-                .unwrap_or_else(|| PlanVariantsProgress::new(total));
-
-            if idx < progress.steps.len() && progress.steps[idx] == ProgressStatus::Pending {
-                progress.set_in_progress(idx);
-            }
-
-            let activity = activity.trim();
-            if let Some(tokens) = activity.strip_prefix("tokens ") {
-                progress.set_tokens(idx, Some(tokens.trim().to_string()));
-            } else {
-                let activity = activity.strip_prefix("shell ").unwrap_or(activity).trim();
-                if activity.is_empty() {
-                    progress.set_activity(idx, None);
-                } else {
-                    progress.set_activity(idx, Some(activity.to_string()));
-                }
-            }
-            return Some(progress);
-        }
-
-        None
     }
 
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
@@ -1299,11 +1256,11 @@ impl ChatWidget {
         }
     }
 
-    fn on_stream_error(&mut self, message: String) {
+    fn on_stream_error(&mut self, message: String, additional_details: Option<String>) {
         if self.retry_status_header.is_none() {
             self.retry_status_header = Some(self.current_status_header.clone());
         }
-        self.set_status_header(message);
+        self.set_status(message, additional_details);
     }
 
     /// Periodic tick to commit at most one queued line to history with a small delay,
@@ -1674,6 +1631,7 @@ impl ChatWidget {
             invocation,
             duration,
             tokens,
+            outcome,
             result,
         } = ev;
 
@@ -1689,7 +1647,7 @@ impl ChatWidget {
                     let mut group = group
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    group.complete_call(&call_id, duration, tokens, result);
+                    group.complete_call(&call_id, duration, tokens, outcome, result);
                     group.is_complete()
                 };
                 if is_complete {
@@ -1702,7 +1660,7 @@ impl ChatWidget {
 
         let mut cell =
             history_cell::new_active_subagent_tool_call_group(call_id.clone(), invocation);
-        cell.complete_call(&call_id, duration, tokens, result);
+        cell.complete_call(&call_id, duration, tokens, outcome, result);
         self.add_boxed_history(Box::new(cell));
         self.request_redraw();
     }
@@ -1763,6 +1721,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut config = config;
         config.model = Some(model_slug.clone());
+        let lsp_manager = conversation_manager.lsp_manager();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
@@ -1784,6 +1743,7 @@ impl ChatWidget {
             active_cell: None,
             active_subagent_group: None,
             config,
+            lsp_manager,
             model_family,
             auth_manager,
             models_manager,
@@ -1802,6 +1762,8 @@ impl ChatWidget {
             stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_lsp_tool_calls: HashMap::new(),
+            pending_apply_patch_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1810,11 +1772,13 @@ impl ChatWidget {
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Ready"),
             retry_status_header: None,
-            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
+            resume_last_turn_aborted: false,
+            resume_had_partial_output: false,
+            resume_had_in_progress_tools: false,
             pending_notification: None,
             is_review_mode: false,
             pre_review_token_info: None,
@@ -1828,6 +1792,7 @@ impl ChatWidget {
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
     pub(crate) fn new_from_existing(
         common: ChatWidgetInit,
+        conversation_manager: Arc<ConversationManager>,
         conversation: std::sync::Arc<codex_core::CodexConversation>,
         session_configured: codex_core::protocol::SessionConfiguredEvent,
     ) -> Self {
@@ -1847,6 +1812,7 @@ impl ChatWidget {
         let model_slug = model_family.get_model_slug().to_string();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
+        let lsp_manager = conversation_manager.lsp_manager();
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
@@ -1868,6 +1834,7 @@ impl ChatWidget {
             active_cell: None,
             active_subagent_group: None,
             config,
+            lsp_manager,
             model_family,
             auth_manager,
             models_manager,
@@ -1886,6 +1853,8 @@ impl ChatWidget {
             stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_lsp_tool_calls: HashMap::new(),
+            pending_apply_patch_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1894,11 +1863,13 @@ impl ChatWidget {
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Ready"),
             retry_status_header: None,
-            plan_variants_progress: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
+            resume_last_turn_aborted: false,
+            resume_had_partial_output: false,
+            resume_had_in_progress_tools: false,
             pending_notification: None,
             is_review_mode: false,
             pre_review_token_info: None,
@@ -2054,8 +2025,14 @@ impl ChatWidget {
             SlashCommand::PlanModel => {
                 self.open_plan_model_popup();
             }
+            SlashCommand::SubagentModel => {
+                self.open_subagent_model_popup();
+            }
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
+            }
+            SlashCommand::Experimental => {
+                self.open_experimental_popup();
             }
             SlashCommand::Quit | SlashCommand::Exit => {
                 self.request_exit();
@@ -2069,9 +2046,9 @@ impl ChatWidget {
                 }
                 self.request_exit();
             }
-            SlashCommand::Undo => {
-                self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
-            }
+            // SlashCommand::Undo => {
+            //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
+            // }
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();
@@ -2097,6 +2074,9 @@ impl ChatWidget {
             }
             SlashCommand::Status => {
                 self.add_status_output();
+            }
+            SlashCommand::Lsp => {
+                self.open_lsp_status();
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -2179,6 +2159,58 @@ impl ChatWidget {
             self.needs_final_message_separator = true;
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
         }
+    }
+
+    fn active_cell_is_in_progress(&self) -> bool {
+        let Some(cell) = self.active_cell.as_ref() else {
+            return false;
+        };
+
+        if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>() {
+            return exec.is_active();
+        }
+        if let Some(tool) = cell.as_any().downcast_ref::<McpToolCallCell>() {
+            return tool.is_active();
+        }
+        if let Some(tool) = cell.as_any().downcast_ref::<SubAgentToolCallGroupCell>() {
+            return !tool.is_complete();
+        }
+
+        false
+    }
+
+    fn flush_completed_active_cell_if_needed(&mut self) -> bool {
+        if self.active_cell.is_none() {
+            return false;
+        }
+        if self.active_cell_is_in_progress() {
+            return false;
+        }
+        self.flush_active_cell();
+        true
+    }
+
+    fn active_subagent_group_is_in_progress(&self) -> bool {
+        let Some(group) = self.active_subagent_group.as_ref() else {
+            return false;
+        };
+        let group = group
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !group.is_complete()
+    }
+
+    fn clear_completed_subagent_group_if_needed(&mut self) -> bool {
+        if !self.active_subagent_group.as_ref().is_some_and(|group| {
+            let group = group
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            group.is_complete()
+        }) {
+            return false;
+        }
+        self.active_subagent_group = None;
+        true
     }
 
     fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
@@ -2328,10 +2360,14 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) if !from_replay => self.on_task_started(),
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) if !from_replay => {
-                self.on_task_complete(last_agent_message)
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
+                if from_replay {
+                    self.on_task_complete_replay();
+                } else {
+                    self.on_task_complete(last_agent_message);
+                }
             }
-            EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_) => {}
+            EventMsg::TaskStarted(_) => {}
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
@@ -2340,17 +2376,23 @@ impl ChatWidget {
             EventMsg::Error(ErrorEvent { message, .. }) => self.on_error(message),
             EventMsg::McpStartupUpdate(ev) => self.on_mcp_startup_update(ev),
             EventMsg::McpStartupComplete(ev) => self.on_mcp_startup_complete(ev),
-            EventMsg::TurnAborted(ev) => match ev.reason {
-                TurnAbortReason::Interrupted => {
-                    self.on_interrupted_turn(ev.reason);
+            EventMsg::TurnAborted(ev) => {
+                if from_replay {
+                    self.on_interrupted_turn_replay(ev.reason);
+                } else {
+                    match ev.reason {
+                        TurnAbortReason::Interrupted => {
+                            self.on_interrupted_turn(ev.reason);
+                        }
+                        TurnAbortReason::Replaced => {
+                            self.on_error("Turn aborted: replaced by a new task".to_owned())
+                        }
+                        TurnAbortReason::ReviewEnded => {
+                            self.on_interrupted_turn(ev.reason);
+                        }
+                    }
                 }
-                TurnAbortReason::Replaced => {
-                    self.on_error("Turn aborted: replaced by a new task".to_owned())
-                }
-                TurnAbortReason::ReviewEnded => {
-                    self.on_interrupted_turn(ev.reason);
-                }
-            },
+            }
             EventMsg::PlanUpdate(update) => self.on_plan_update(update),
             EventMsg::ExecApprovalRequest(ev) => {
                 // For replayed events, synthesize an empty id (these should not occur).
@@ -2401,9 +2443,11 @@ impl ChatWidget {
             }
             EventMsg::UndoStarted(ev) if !from_replay => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
-            EventMsg::StreamError(StreamErrorEvent { message, .. }) if !from_replay => {
-                self.on_stream_error(message)
-            }
+            EventMsg::StreamError(StreamErrorEvent {
+                message,
+                additional_details,
+                ..
+            }) if !from_replay => self.on_stream_error(message, additional_details),
             EventMsg::BackgroundEvent(_) | EventMsg::UndoStarted(_) | EventMsg::StreamError(_) => {}
             EventMsg::UserMessage(ev) => {
                 if from_replay {
@@ -2423,8 +2467,8 @@ impl ChatWidget {
                 }
             }
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
+            EventMsg::RawResponseItem(ev) => self.on_raw_response_item(ev),
+            EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
@@ -2708,8 +2752,14 @@ impl ChatWidget {
                 sandbox_policy: None,
                 model: Some(switch_model.clone()),
                 plan_model: None,
+                explore_model: None,
+                mini_subagent_model: None,
+                subagent_model: None,
                 effort: Some(Some(default_effort)),
                 plan_effort: None,
+                explore_effort: None,
+                mini_subagent_effort: None,
+                subagent_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateModel(switch_model.clone()));
@@ -2778,6 +2828,10 @@ impl ChatWidget {
         self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Plan);
     }
 
+    pub(crate) fn open_subagent_model_popup(&mut self) {
+        self.open_model_popup_for_target(crate::app_event::ModelPickerTarget::Subagent);
+    }
+
     fn open_model_popup_for_target(&mut self, target: crate::app_event::ModelPickerTarget) {
         let chat_model = self.model_family.get_model_slug();
         let current_model = match target {
@@ -2785,6 +2839,11 @@ impl ChatWidget {
             crate::app_event::ModelPickerTarget::Plan => self
                 .config
                 .plan_model
+                .clone()
+                .unwrap_or_else(|| chat_model.to_string()),
+            crate::app_event::ModelPickerTarget::Subagent => self
+                .config
+                .subagent_model
                 .clone()
                 .unwrap_or_else(|| chat_model.to_string()),
         };
@@ -2863,6 +2922,11 @@ impl ChatWidget {
                         "Choose a specific model and reasoning level for /plan (current: {current_label})"
                     )
                 }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    format!(
+                        "Choose a specific model and reasoning level for spawned subagents (current: {current_label})"
+                    )
+                }
             });
 
             items.push(SelectionItem {
@@ -2879,6 +2943,9 @@ impl ChatWidget {
             title: Some(match target {
                 crate::app_event::ModelPickerTarget::Chat => "Select Model".to_string(),
                 crate::app_event::ModelPickerTarget::Plan => "Select Plan Model".to_string(),
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Select Subagent Model".to_string()
+                }
             }),
             subtitle: Some(match target {
                 crate::app_event::ModelPickerTarget::Chat => {
@@ -2886,6 +2953,9 @@ impl ChatWidget {
                 }
                 crate::app_event::ModelPickerTarget::Plan => {
                     "Pick a quick auto mode or browse all models for /plan.".to_string()
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Pick a quick auto mode or browse all models for spawned subagents.".to_string()
                 }
             }),
             footer_hint: Some(standard_popup_hint_line()),
@@ -2928,6 +2998,11 @@ impl ChatWidget {
                 .plan_model
                 .clone()
                 .unwrap_or_else(|| chat_model.to_string()),
+            crate::app_event::ModelPickerTarget::Subagent => self
+                .config
+                .subagent_model
+                .clone()
+                .unwrap_or_else(|| chat_model.to_string()),
         };
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
@@ -2960,6 +3035,9 @@ impl ChatWidget {
                 crate::app_event::ModelPickerTarget::Plan => {
                     "Select Plan Model and Effort".to_string()
                 }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    "Select Subagent Model and Effort".to_string()
+                }
             }),
             subtitle: Some(
                 "Access legacy models by running codex -m <model_name> or in your config.toml"
@@ -2988,8 +3066,14 @@ impl ChatWidget {
                         sandbox_policy: None,
                         model: Some(model_for_action.clone()),
                         plan_model: None,
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: None,
                         effort: Some(effort_for_action),
                         plan_effort: None,
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                     tx.send(AppEvent::UpdateModel(model_for_action.clone()));
@@ -3011,8 +3095,14 @@ impl ChatWidget {
                         sandbox_policy: None,
                         model: None,
                         plan_model: Some(model_for_action.clone()),
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: None,
                         effort: None,
                         plan_effort: Some(effort_for_action),
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                     tx.send(AppEvent::UpdatePlanModel(model_for_action.clone()));
@@ -3023,6 +3113,35 @@ impl ChatWidget {
                     });
                     tracing::info!(
                         "Selected plan model: {}, Selected effort: {}",
+                        model_for_action,
+                        effort_label
+                    );
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: None,
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: Some(model_for_action.clone()),
+                        effort: None,
+                        plan_effort: None,
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: Some(effort_for_action),
+                        summary: None,
+                    }));
+                    tx.send(AppEvent::UpdateSubagentModel(model_for_action.clone()));
+                    tx.send(AppEvent::UpdateSubagentReasoningEffort(effort_for_action));
+                    tx.send(AppEvent::PersistSubagentModelSelection {
+                        model: model_for_action.clone(),
+                        effort: effort_for_action,
+                    });
+                    tracing::info!(
+                        "Selected subagent model: {}, Selected effort: {}",
                         model_for_action,
                         effort_label
                     );
@@ -3105,6 +3224,9 @@ impl ChatWidget {
             crate::app_event::ModelPickerTarget::Plan => {
                 self.config.plan_model.as_deref().unwrap_or(chat_model)
             }
+            crate::app_event::ModelPickerTarget::Subagent => {
+                self.config.subagent_model.as_deref().unwrap_or(chat_model)
+            }
         };
         let is_current_model = effective_current_model == preset.model;
         let highlight_choice = if is_current_model {
@@ -3113,6 +3235,13 @@ impl ChatWidget {
                 crate::app_event::ModelPickerTarget::Plan => {
                     if self.config.plan_model.as_deref() == Some(preset.model.as_str()) {
                         self.config.plan_model_reasoning_effort
+                    } else {
+                        self.config.model_reasoning_effort
+                    }
+                }
+                crate::app_event::ModelPickerTarget::Subagent => {
+                    if self.config.subagent_model.as_deref() == Some(preset.model.as_str()) {
+                        self.config.subagent_model_reasoning_effort
                     } else {
                         self.config.model_reasoning_effort
                     }
@@ -3216,8 +3345,14 @@ impl ChatWidget {
                         sandbox_policy: None,
                         model: Some(model.clone()),
                         plan_model: None,
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: None,
                         effort: Some(effort),
                         plan_effort: None,
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                 self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
@@ -3241,8 +3376,14 @@ impl ChatWidget {
                         sandbox_policy: None,
                         model: None,
                         plan_model: Some(model.clone()),
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: None,
                         effort: None,
                         plan_effort: Some(effort),
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: None,
                         summary: None,
                     }));
                 self.app_event_tx
@@ -3255,6 +3396,39 @@ impl ChatWidget {
                 });
                 tracing::info!(
                     "Selected plan model: {}, Selected effort: {}",
+                    model,
+                    effort_label
+                );
+            }
+            crate::app_event::ModelPickerTarget::Subagent => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        plan_model: None,
+                        explore_model: None,
+                        mini_subagent_model: None,
+                        subagent_model: Some(model.clone()),
+                        effort: None,
+                        plan_effort: None,
+                        explore_effort: None,
+                        mini_subagent_effort: None,
+                        subagent_effort: Some(effort),
+                        summary: None,
+                    }));
+                self.app_event_tx
+                    .send(AppEvent::UpdateSubagentModel(model.clone()));
+                self.app_event_tx
+                    .send(AppEvent::UpdateSubagentReasoningEffort(effort));
+                self.app_event_tx
+                    .send(AppEvent::PersistSubagentModelSelection {
+                        model: model.clone(),
+                        effort,
+                    });
+                tracing::info!(
+                    "Selected subagent model: {}, Selected effort: {}",
                     model,
                     effort_label
                 );
@@ -3339,6 +3513,25 @@ impl ChatWidget {
         });
     }
 
+    pub(crate) fn open_experimental_popup(&mut self) {
+        let features: Vec<BetaFeatureItem> = FEATURES
+            .iter()
+            .filter_map(|spec| {
+                let name = spec.stage.beta_menu_name()?;
+                let description = spec.stage.beta_menu_description()?;
+                Some(BetaFeatureItem {
+                    feature: spec.id,
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    enabled: self.config.features.enabled(spec.id),
+                })
+            })
+            .collect();
+
+        let view = ExperimentalFeaturesView::new(features, self.app_event_tx.clone());
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
     fn approval_preset_actions(
         approval: AskForApproval,
         sandbox: SandboxPolicy,
@@ -3351,8 +3544,14 @@ impl ChatWidget {
                 sandbox_policy: Some(sandbox_clone.clone()),
                 model: None,
                 plan_model: None,
+                explore_model: None,
+                mini_subagent_model: None,
+                subagent_model: None,
                 effort: None,
                 plan_effort: None,
+                explore_effort: None,
+                mini_subagent_effort: None,
+                subagent_effort: None,
                 summary: None,
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
@@ -3685,6 +3884,14 @@ impl ChatWidget {
         Ok(())
     }
 
+    pub(crate) fn set_feature_enabled(&mut self, feature: Feature, enabled: bool) {
+        if enabled {
+            self.config.features.enable(feature);
+        } else {
+            self.config.features.disable(feature);
+        }
+    }
+
     pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {
         self.config.notices.hide_full_access_warning = Some(acknowledged);
     }
@@ -3718,6 +3925,11 @@ impl ChatWidget {
         self.config.plan_model_reasoning_effort = effort;
     }
 
+    /// Set the subagent reasoning effort in the widget's config copy.
+    pub(crate) fn set_subagent_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
+        self.config.subagent_model_reasoning_effort = effort;
+    }
+
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str, model_family: ModelFamily) {
         self.session_header.set_model(model);
@@ -3727,6 +3939,11 @@ impl ChatWidget {
     /// Set the plan model in the widget's config copy.
     pub(crate) fn set_plan_model(&mut self, model: &str) {
         self.config.plan_model = Some(model.to_string());
+    }
+
+    /// Set the subagent model in the widget's config copy.
+    pub(crate) fn set_subagent_model(&mut self, model: &str) {
+        self.config.subagent_model = Some(model.to_string());
     }
 
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {
@@ -3818,9 +4035,14 @@ impl ChatWidget {
         scrolled: bool,
         selection_active: bool,
         scroll_position: Option<(usize, usize)>,
+        copy_selection_key: crate::key_hint::KeyBinding,
     ) {
-        self.bottom_pane
-            .set_transcript_ui_state(scrolled, selection_active, scroll_position);
+        self.bottom_pane.set_transcript_ui_state(
+            scrolled,
+            selection_active,
+            scroll_position,
+            copy_selection_key,
+        );
     }
 
     /// Forward an `Op` directly to codex.
@@ -4049,6 +4271,30 @@ impl ChatWidget {
             RenderableItem::Borrowed(&self.bottom_pane).inset(Insets::tlbr(1, 0, 0, 0)),
         );
         RenderableItem::Owned(Box::new(flex))
+    }
+
+    fn open_lsp_status(&mut self) {
+        if !self.config.features.enabled(Feature::Lsp) {
+            self.add_error_message(
+                "LSP is disabled. Enable `[features].lsp = true` in config.toml.".to_string(),
+            );
+            return;
+        };
+
+        let cwd = self.config.cwd.clone();
+        let mut lsp_config = self.config.lsp.manager.clone();
+        lsp_config.enabled = true;
+        let lsp = self.lsp_manager.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            lsp.set_config(lsp_config).await;
+            match lsp.status(&cwd).await {
+                Ok(status) => tx.send(AppEvent::LspStatusLoaded(status)),
+                Err(err) => tx.send(AppEvent::LspStatusLoadFailed(format!(
+                    "Failed to fetch LSP status: {err:#}",
+                ))),
+            }
+        });
     }
 }
 

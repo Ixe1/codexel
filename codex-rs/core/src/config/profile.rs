@@ -1,5 +1,6 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
+use serde::Serialize;
 
 use crate::protocol::AskForApproval;
 use codex_protocol::config_types::ReasoningSummary;
@@ -9,10 +10,13 @@ use codex_protocol::openai_models::ReasoningEffort;
 
 /// Collection of common configuration options that a user can define as a unit
 /// in `config.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigProfile {
     pub model: Option<String>,
     pub plan_model: Option<String>,
+    pub explore_model: Option<String>,
+    pub mini_subagent_model: Option<String>,
+    pub subagent_model: Option<String>,
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
@@ -20,6 +24,9 @@ pub struct ConfigProfile {
     pub sandbox_mode: Option<SandboxMode>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_model_reasoning_effort: Option<ReasoningEffort>,
+    pub explore_model_reasoning_effort: Option<ReasoningEffort>,
+    pub mini_subagent_model_reasoning_effort: Option<ReasoningEffort>,
+    pub subagent_model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
     pub chatgpt_base_url: Option<String>,
@@ -27,7 +34,6 @@ pub struct ConfigProfile {
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub include_apply_patch_tool: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
-    pub experimental_use_rmcp_client: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
     pub tools_web_search: Option<bool>,
     pub tools_view_image: Option<bool>,

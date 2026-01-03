@@ -43,16 +43,25 @@ You are planning only. Do not call `apply_patch` or execute mutating commands.
 
 Output quality bar:
 - The plan must be actionable by another engineer without extra back-and-forth.
-- Prefer 8-16 steps. Each step should describe a concrete deliverable and, when helpful, name key files/components to touch.
+- Scale the number of steps to the task. Avoid filler (small: 4-8; typical: 8-12; complex: 12-16).
+- Each step should describe a concrete deliverable and, when helpful, name key files/components to touch.
 - Put detailed substeps, rationale, trade-offs, risks, and validation commands in `plan.explanation` (multi-paragraph is fine).
 - `plan.explanation` MUST be a practical runbook. Use clear section headings. Include ALL of:
   - Assumptions
   - Scope (in-scope + non-goals)
   - Touchpoints (files/modules/components to change, with what/why)
   - Approach (sequence notes; include a short "discovery checklist" of 2-6 read-only commands/files if the task is ambiguous)
+  - Optional: Web search (only if available; keep it minimal and tolerate failures)
   - Risks (failure modes + mitigations + rollback)
   - Acceptance criteria (observable outcomes; 3-8 bullets)
   - Validation (exact commands, and where to run them)
+  - Open questions (optional; write "None." if none)
+  - If the task involves UI (web, mobile, TUI), add an explicit "UI quality bar" subsection under Approach or Acceptance criteria that covers:
+    - Visual/UX goals (what should feel better, not just what changes)
+    - Design system plan (tokens, spacing, typography, component reuse)
+    - Responsiveness (breakpoints, layout constraints) and accessibility (keyboard, contrast, screen readers where applicable)
+    - Interaction polish (loading/empty/error states, animations/micro-interactions only if appropriate)
+    - Verification: how to manually validate the UX (exact steps) plus any automated UI tests to run
 
 Mini-example (illustrative; do not copy verbatim):
 - Step: "Add `--dry-run` flag to CLI"
@@ -61,6 +70,9 @@ Mini-example (illustrative; do not copy verbatim):
 - Validation: "`cd mytool; cargo test -p mytool-cli`"
 
 Process:
+- At the beginning of /plan, get repo grounding via `plan_explore` (unless the user provided explicit touchpoints/paths and you truly don't need discovery).
+- If you learn new constraints (e.g. from clarification answers) that materially change touchpoints, you may call `plan_explore` again.
+- Do not do repo exploration directly in the plan-mode main context unless touchpoints are already known or `plan_explore` fails.
 - Once you understand the goal, call `propose_plan_variants` to generate 3 alternative plans (at most once per draft).
 - Synthesize the final plan (do not just pick a variant verbatim).
 - Present the final plan via `approve_plan`.
@@ -74,22 +86,32 @@ const PLAN_MODE_DEVELOPER_PREFIX: &str = r#"## Plan Mode (Slash Command)
 Goal: produce a clear, actionable implementation plan for the user's request without making code changes.
 
 Rules:
-- You may explore the repo with read-only commands, but keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- Prefer `plan_explore` for repo grounding: do not run repo exploration commands directly unless touchpoints are already known (e.g. user specified files) or `plan_explore` fails.
+- If you must explore directly, keep it minimal (2-6 targeted commands) and avoid dumping large files.
+- If the `web_search` tool is available, you may use it sparingly for up-to-date or niche details; prefer repo-local sources and tolerate tool failures.
 - Do not attempt to edit files or run mutating commands (no installs, no git writes, no redirects/heredocs that write files).
-- You may ask clarifying questions via AskUserQuestion when requirements are ambiguous or missing.
-- Do not call `spawn_subagent` in plan mode (it is not available from this session type).
+- When the goal is ambiguous in a way that would change the plan materially, ask clarifying questions via AskUserQuestion instead of guessing. Batch questions and avoid prolonged back-and-forth.
+- Discovery order: if touchpoints are not already known, call `plan_explore` early (usually as your first action). Ask clarification questions after reading the reports. Re-run `plan_explore` if clarification answers change the likely touchpoints.
 - Use `propose_plan_variants` to generate 3 alternative plans as input (at most once per plan draft). If it fails, proceed without it.
 - When you have a final plan, call `approve_plan` with:
   - Title: short and specific.
   - Summary: 2-4 sentences with key approach + scope boundaries.
   - Steps: concise, ordered, and checkable.
-  - Explanation: use the required section headings (Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation) and make it a junior-executable runbook.
+  - Steps status: set every step status to `"pending"` (this is an approved plan, not execution progress).
+  - Explanation: use the required section headings (Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation; Open questions) and make it a junior-executable runbook. For headings that don't apply, write "None.".
 - If the user requests revisions, incorporate feedback and propose a revised plan (you may call `propose_plan_variants` again only if the plan materially changes or the user asks for alternatives).
 - If the user rejects, stop.
 
 When the plan is approved, your final assistant message MUST be ONLY valid JSON matching:
 { "title": string, "summary": string, "plan": { "explanation": string|null, "plan": [ { "step": string, "status": "pending"|"in_progress"|"completed" } ] } }
+Do not wrap the JSON in markdown code fences.
 "#;
+
+pub(crate) fn constrain_features_for_planning(features: &mut crate::features::Features) {
+    features
+        .disable(crate::features::Feature::ApplyPatchFreeform)
+        .disable(crate::features::Feature::ViewImageTool);
+}
 
 fn build_plan_mode_developer_instructions(existing: &str, ask: &str) -> String {
     let mut developer_instructions = String::new();
@@ -179,16 +201,20 @@ async fn start_plan_conversation(
         .developer_instructions
         .clone()
         .unwrap_or_default();
-    sub_agent_config.developer_instructions = Some(build_plan_mode_developer_instructions(
-        existing.as_str(),
-        ask.as_str(),
-    ));
+    // Keep plan-mode guidance at the top; append the global clarification policy after it (as part
+    // of the inherited developer instructions) to avoid it taking precedence over plan-mode's
+    // discovery order.
+    let existing =
+        crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(existing))
+            .unwrap_or_default();
+    let existing =
+        crate::tools::spec::prepend_lsp_navigation_developer_instructions(Some(existing))
+            .unwrap_or_default();
+    let developer_instructions =
+        build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
+    sub_agent_config.developer_instructions = Some(developer_instructions);
 
-    sub_agent_config
-        .features
-        .disable(crate::features::Feature::ApplyPatchFreeform)
-        .disable(crate::features::Feature::WebSearchRequest)
-        .disable(crate::features::Feature::ViewImageTool);
+    constrain_features_for_planning(&mut sub_agent_config.features);
 
     sub_agent_config.approval_policy =
         crate::config::Constrained::allow_any(codex_protocol::protocol::AskForApproval::Never);
@@ -352,9 +378,10 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 use assert_cmd::cargo::cargo_bin;
-                let mut overrides = crate::config::ConfigOverrides::default();
-                overrides.codex_linux_sandbox_exe = Some(cargo_bin("codex-linux-sandbox"));
-                overrides
+                crate::config::ConfigOverrides {
+                    codex_linux_sandbox_exe: Some(cargo_bin("codex-linux-sandbox")),
+                    ..Default::default()
+                }
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -376,17 +403,25 @@ mod tests {
         let existing_base = cfg.base_instructions.clone();
 
         let existing = cfg.developer_instructions.clone().unwrap_or_default();
-        cfg.developer_instructions = Some(build_plan_mode_developer_instructions(
-            existing.as_str(),
-            ask.as_str(),
-        ));
+        let developer_instructions =
+            build_plan_mode_developer_instructions(existing.as_str(), ask.as_str());
+        cfg.developer_instructions =
+            crate::tools::spec::prepend_clarification_policy_developer_instructions(Some(
+                developer_instructions,
+            ));
 
         assert_eq!(cfg.base_instructions, existing_base);
         assert!(
             cfg.developer_instructions
                 .as_deref()
                 .unwrap_or_default()
-                .starts_with("## Plan Mode")
+                .contains("## Plan Mode")
+        );
+        assert!(
+            cfg.developer_instructions
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## Clarification Policy")
         );
         assert!(
             cfg.developer_instructions
@@ -418,6 +453,21 @@ mod tests {
         assert!(PLAN_MODE_DEVELOPER_PREFIX.contains(
             "Assumptions; Scope; Touchpoints; Approach; Risks; Acceptance criteria; Validation"
         ));
+    }
+
+    #[test]
+    fn planning_constraints_keep_web_search_if_enabled() {
+        let mut features = crate::features::Features::with_defaults();
+        features
+            .enable(crate::features::Feature::ApplyPatchFreeform)
+            .enable(crate::features::Feature::ViewImageTool)
+            .enable(crate::features::Feature::WebSearchRequest);
+
+        constrain_features_for_planning(&mut features);
+
+        assert!(!features.enabled(crate::features::Feature::ApplyPatchFreeform));
+        assert!(!features.enabled(crate::features::Feature::ViewImageTool));
+        assert!(features.enabled(crate::features::Feature::WebSearchRequest));
     }
 
     #[tokio::test]

@@ -31,6 +31,7 @@ pub mod features;
 mod flags;
 pub mod git_info;
 pub mod landlock;
+mod lsp_prompt;
 pub mod mcp;
 mod mcp_connection_manager;
 pub mod models_manager;

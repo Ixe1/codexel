@@ -1,12 +1,9 @@
 use assert_cmd::Command as AssertCommand;
-use assert_cmd::cargo::cargo_bin;
 use codex_core::RolloutRecorder;
 use codex_core::protocol::GitInfo;
 use core_test_support::fs_wait;
 use core_test_support::skip_if_no_network;
-use escargot::CargoBuild;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -16,25 +13,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-static CODEX_CLI_BIN: OnceLock<PathBuf> = OnceLock::new();
-
 fn codex_cli_bin() -> PathBuf {
-    CODEX_CLI_BIN
-        .get_or_init(|| {
-            let candidate = cargo_bin("codexel");
-            if candidate.is_file() {
-                return candidate;
-            }
-
-            CargoBuild::new()
-                .package("codex-cli")
-                .bin("codexel")
-                .run()
-                .unwrap_or_else(|err| panic!("failed to build codexel binary: {err}"))
-                .path()
-                .to_path_buf()
-        })
-        .clone()
+    codex_utils_cargo_bin::cargo_bin("codexel")
+        .unwrap_or_else(|err| panic!("failed to locate codexel binary: {err}"))
 }
 
 /// Tests streaming chat completions through the CLI using a mock server.

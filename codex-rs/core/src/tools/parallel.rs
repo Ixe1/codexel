@@ -16,6 +16,7 @@ use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
 use crate::protocol::EventMsg;
 use crate::protocol::SubAgentToolCallEndEvent;
+use crate::protocol::SubAgentToolCallOutcome;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::SPAWN_SUBAGENT_TOOL_NAME;
@@ -100,6 +101,7 @@ impl ToolCallRuntime {
                                         invocation,
                                         duration: elapsed,
                                         tokens: None,
+                                        outcome: Some(SubAgentToolCallOutcome::Cancelled),
                                         result: Err(message),
                                     }),
                                 )

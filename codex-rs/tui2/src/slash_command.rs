@@ -14,7 +14,9 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     PlanModel,
+    SubagentModel,
     Approvals,
+    Experimental,
     Skills,
     Review,
     Plan,
@@ -22,10 +24,11 @@ pub enum SlashCommand {
     Resume,
     Init,
     Compact,
-    Undo,
+    // Undo,
     Diff,
     Mention,
     Status,
+    Lsp,
     Mcp,
     Logout,
     Quit,
@@ -46,15 +49,20 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Plan => "plan a task before making changes",
             SlashCommand::Resume => "resume a saved chat",
-            SlashCommand::Undo => "ask Codex to undo a turn",
+            // SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Lsp => "show current LSP status (detected/configured/running)",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::PlanModel => "choose what model and reasoning effort to use for /plan",
+            SlashCommand::SubagentModel => {
+                "choose what model and reasoning effort to use for spawned subagents"
+            }
             SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Experimental => "toggle beta features",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
@@ -75,10 +83,12 @@ impl SlashCommand {
             | SlashCommand::Resume
             | SlashCommand::Init
             | SlashCommand::Compact
-            | SlashCommand::Undo
+            // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::PlanModel
+            | SlashCommand::SubagentModel
             | SlashCommand::Approvals
+            | SlashCommand::Experimental
             | SlashCommand::Review
             | SlashCommand::Plan
             | SlashCommand::Logout => false,
@@ -86,6 +96,7 @@ impl SlashCommand {
             | SlashCommand::Mention
             | SlashCommand::Skills
             | SlashCommand::Status
+            | SlashCommand::Lsp
             | SlashCommand::Mcp
             | SlashCommand::Feedback
             | SlashCommand::Quit

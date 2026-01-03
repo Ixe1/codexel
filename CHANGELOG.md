@@ -11,14 +11,110 @@ edited between the markers.
 
 ### Highlights
 
-- _No fork-only changes yet._
+- Resume: add turn-resume with persisted interrupted history, plus a guided prompt and usable options on small terminals.
+- Agents: add `/subagent-model`, prefer mini subagents for repo exploration, and cancel spawned subagents on abort.
+- Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
+- Plan Mode: switch `/plan` exploration to mini subagents; add `mini_subagent_*` config and deprecate `explore_model*`.
+- TUI: remove `/explore-model`; add `/experimental` to TUI2.
+- Core: strengthen `ask_user_question` guidance and inject SpawnSubagent guidance for execution.
+- Experimental: add LSP diagnostics + navigation (autodetecting common servers like `rust-analyzer`, `gopls`, `pyright-langserver`, and `typescript-language-server`).
+- Packaging/CI: add Homebrew cask workflow + macOS artifacts, and harden workflow conditionals/YAML formatting.
 
 ### Details
 
 <!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
 
-_No fork-only changes yet._
+#### Features
 
+- feat: add experimental LSP diagnostics and navigation
+
+#### Fixes
+
+- Fix YAML heredoc indentation
+- Fix rust-ci job if expressions
+- Fix workflows: avoid secrets in if
+- Fix app-server OverrideTurnContext init
+- Fix subagent badges
+- fix(lsp): respect `max_tool_diagnostics` and avoid leaked servers
+
+#### Documentation
+
+- docs: keep README ASCII-only
+- docs: prettier
+- docs: note Codexel release tag format
+
+#### TUI
+
+- tui: update status snapshots for v0.1.4
+- tui: prompt to continue on interrupted resume
+- tui: keep resume options visible on small terminals
+- tui: show LSP toggle in /experimental
+- tui: surface lsp tool calls in history
+- TUI: render `apply_patch` diagnostics as styled card
+- TUI: avoid false interrupted prompt on resume
+- tui: drop /explore-model; add /experimental to tui2
+- tui: default AskUserQuestion review selection to Submit
+- tui: parse LSP diagnostics entries with colons
+- tui: make /diagnostics open changed files
+- tui: remove /diagnostics
+
+#### Core
+
+- core: strengthen `ask_user_question` guidance
+- core: add web UI quality bar instructions
+- core: inject SpawnSubagent guidance for exec
+- core: enable LSP prompt diagnostics by default
+
+#### Plan Mode
+
+- plan: refine plan mode + variants prompts
+- plan: allow web search in /plan
+- Plan mode: add `plan_explore` subagent exploration
+- Plan exploration: mini subagents + `mini_subagent_*` config
+
+#### Branding & Packaging
+
+- codex-cli: bump codexel npm version to 0.1.3
+- Merge upstream/main into Codexel
+
+#### Chores
+
+- chore: update changelog
+- chore: make changelog generator prettier-stable
+- chore(app-server): drop unused `os_info` dev-dependency
+- chore: regenerate changelog
+
+#### Other
+
+- changelog: update 0.1.3 for upstream merge
+- Add Homebrew cask workflow and macOS artifacts
+- Use macos-15-intel for `x86_64` builds
+- release: bump versions to 0.1.4
+- changelog: update unreleased
+- checkpoint: pre explore-model + cancelled subagents
+- Add /explore-model and cancel subagents on abort
+- Persist interrupted turn history on resume
+- changelog: update unreleased for v0.1.4
+- Add /subagent-model override
+- Add mini/explorer subagents and UI badges
+- codex-lsp: autodetect .cmd language servers on Windows
+- codex-core: prefer LSP tools over rg via developer instructions
+- lsp: normalize paths and clarify tool docs
+- lsp: prewarm workspace and configured servers
+- lsp: prewarm autodetected servers
+- LSP: enable publishDiagnostics and show `apply_patch` diagnostics in TUI
+- Prefer mini subagents for repo exploration
+- Tighten mini subagent exploration guidance
+- changelog: update unreleased
+- changelog: update unreleased
+- lsp: autodetect PHP and Perl servers
+- changelog: update unreleased
+- Ignore tmp/lsp-smoke LSP test files
+- Add LSP status command and improve /lsp UI
+- codex-lsp: add C# language support
+- lsp: handle server requests and pull diagnostics
+- lsp: seed diagnostics by opening a source file
+- lsp: wait for diagnostics during warmup; show pull-diags capability
 <!-- END GENERATED DETAILS -->
 
 ## [0.1.3] - 2025-12-20
@@ -51,7 +147,7 @@ Release commit: 44f8df17aa11051fcf3919a9c16fe3b9c3296d66
 #### Documentation
 
 - docs: clarify Codexel fork positioning
-- docs: move What's different up and mention ask_user_question
+- docs: move What's different up and mention `ask_user_question`
 
 #### TUI
 
@@ -85,14 +181,14 @@ Release commit: 44f8df17aa11051fcf3919a9c16fe3b9c3296d66
 - Skip macOS rust-ci jobs on PRs
 - Skip upstream npm staging in CI for forks
 - Format markdown and workflow files
-- Add spawn_subagent tool
-- Show spawn_subagent tool calls in history
+- Add `spawn_subagent` tool
+- Show `spawn_subagent` tool calls in history
 - subagent: stream token counts
 - release: bump workspace version to 0.1.3
 - changelog: cut 0.1.3
 - changelog: update unreleased
 - changelog: update
-- Require spawn_subagent description and refresh snapshots
+- Require `spawn_subagent` description and refresh snapshots
 - changelog: fix 0.1.3 release ranges
 - Merge upstream/main into v0.1.3
 - changelog: filter upstream commits in generator
@@ -191,7 +287,7 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 
 #### Fixes
 
-- fix(tui2): drop disabled_reason from ask_user_question rows
+- fix(tui2): drop `disabled_reason` from `ask_user_question` rows
 
 #### Documentation
 
@@ -206,7 +302,7 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 - tui: auto-execute approved plans
 - tui: polish plan-variants progress
 - tui: fix /plan cursor position
-- tui: add review step for ask_user_question
+- tui: add review step for `ask_user_question`
 - tui: taller plan approval overlay and wrapped summary
 - tui: make Plan Mode placeholder generic
 
@@ -244,5 +340,5 @@ Release commit: 3e57f558eff5b400292a6ad3c9df2721648aed6f
 
 #### Other
 
-- Add ask_user_question tool
+- Add `ask_user_question` tool
 <!-- END GENERATED DETAILS -->

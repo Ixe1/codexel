@@ -75,8 +75,17 @@ impl From<KeyBinding> for Span<'static> {
 impl From<&KeyBinding> for Span<'static> {
     fn from(binding: &KeyBinding) -> Self {
         let KeyBinding { key, modifiers } = binding;
-        let modifiers = modifiers_to_string(*modifiers);
-        let key = match key {
+        // `KeyCode::BackTab` is effectively "shift + tab", but crossterm formats it as "back tab",
+        // which is confusing in our UI hints.
+        let mut display_key = *key;
+        let mut display_modifiers = *modifiers;
+        if display_key == KeyCode::BackTab {
+            display_key = KeyCode::Tab;
+            display_modifiers |= KeyModifiers::SHIFT;
+        }
+
+        let modifiers = modifiers_to_string(display_modifiers);
+        let key = match display_key {
             KeyCode::Enter => "enter".to_string(),
             KeyCode::Char(' ') => "space".to_string(),
             KeyCode::Up => "↑".to_string(),
@@ -85,7 +94,7 @@ impl From<&KeyBinding> for Span<'static> {
             KeyCode::Right => "→".to_string(),
             KeyCode::PageUp => "pgup".to_string(),
             KeyCode::PageDown => "pgdn".to_string(),
-            _ => format!("{key}").to_ascii_lowercase(),
+            _ => format!("{display_key}").to_ascii_lowercase(),
         };
         Span::styled(format!("{modifiers}{key}"), key_hint_style())
     }

@@ -5,11 +5,13 @@ use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_file_search::FileMatch;
+use codex_lsp::LspStatus;
 use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
 use crate::history_cell::HistoryCell;
 
+use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -18,6 +20,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 pub(crate) enum ModelPickerTarget {
     Chat,
     Plan,
+    Subagent,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -38,6 +41,10 @@ pub(crate) enum AppEvent {
     /// bubbling channels through layers of widgets.
     CodexOp(codex_core::protocol::Op),
 
+    /// Queue a synthetic user message (e.g. resume helpers) through the normal
+    /// ChatWidget path so it is persisted to cross-session message history.
+    QueueUserText(String),
+
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
     /// is at most one in-flight search.
@@ -57,6 +64,12 @@ pub(crate) enum AppEvent {
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
+    /// Result of fetching current LSP server status for a workspace.
+    LspStatusLoaded(LspStatus),
+
+    /// Fetching LSP status failed.
+    LspStatusLoadFailed(String),
+
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     StartCommitAnimation,
@@ -75,6 +88,17 @@ pub(crate) enum AppEvent {
     /// Update the current plan reasoning effort in the running app and widget.
     UpdatePlanReasoningEffort(Option<ReasoningEffort>),
 
+    /// Update the current subagent model slug in the running app and widget.
+    UpdateSubagentModel(String),
+
+    /// Update the current subagent reasoning effort in the running app and widget.
+    UpdateSubagentReasoningEffort(Option<ReasoningEffort>),
+
+    /// Persist updated feature flags (e.g. via `/experimental`).
+    UpdateFeatureFlags {
+        updates: Vec<(Feature, bool)>,
+    },
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,
@@ -83,6 +107,12 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected plan model and reasoning effort to the appropriate config.
     PersistPlanModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Persist the selected subagent model and reasoning effort to the appropriate config.
+    PersistSubagentModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
     },

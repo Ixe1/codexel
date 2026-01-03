@@ -56,6 +56,7 @@ pub(crate) async fn run_codex_conversation_interactive(
         auth_manager,
         models_manager,
         Arc::clone(&parent_session.services.skills_manager),
+        parent_session.services.lsp_manager.clone(),
         initial_history.unwrap_or(InitialHistory::New),
         SessionSource::SubAgent(sub_agent_source),
     )
