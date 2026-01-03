@@ -11,6 +11,22 @@ edited between the markers.
 
 ### Highlights
 
+- _No highlights yet._
+
+### Details
+
+<!-- BEGIN GENERATED DETAILS: range=eeecb900a..HEAD -->
+
+_No fork-only changes yet._
+<!-- END GENERATED DETAILS -->
+
+## [0.1.4] - 2026-01-03
+
+Upstream baseline: openai/codex@13c42a077c88a0d04ae7680a9891d2daf4558577
+Release commit: eeecb900a
+
+### Highlights
+
 - Resume: add turn-resume with persisted interrupted history, plus a guided prompt and usable options on small terminals.
 - Agents: add `/subagent-model`, prefer mini subagents for repo exploration, and cancel spawned subagents on abort.
 - Plan Mode: add `plan_explore` subagent exploration and allow `/plan` web search (when enabled).
@@ -22,7 +38,7 @@ edited between the markers.
 
 ### Details
 
-<!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..HEAD -->
+<!-- BEGIN GENERATED DETAILS: range=44f8df17aa11051fcf3919a9c16fe3b9c3296d66..eeecb900a -->
 
 #### Features
 
@@ -36,6 +52,7 @@ edited between the markers.
 - Fix app-server OverrideTurnContext init
 - Fix subagent badges
 - fix(lsp): respect `max_tool_diagnostics` and avoid leaked servers
+- Fix BackTab hint and changelog escaping
 
 #### Documentation
 
